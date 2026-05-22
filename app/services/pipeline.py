@@ -47,7 +47,8 @@ class TranslationPipeline:
         self.settings = settings
         self.openrouter = openrouter_client or OpenRouterClient(settings)
 
-    async def run(self, session: AsyncSession, request: TranslationRequest) -> TranslationRequest:
+    async def run(self, session: AsyncSession, request: TranslationRequest, model: str | None = None) -> TranslationRequest:
+        selected_model = model or self.settings.openrouter_model
         request.status = "running"
         request.error = None
         await session.commit()
@@ -60,7 +61,7 @@ class TranslationPipeline:
                     request_id=request.id,
                     position=layer.position,
                     name=layer.name,
-                    model=self.settings.openrouter_model,
+                    model=selected_model,
                     status="running",
                     input_summary=f"{direction_label(request.direction)} | {len(request.source_text)} characters",
                 )
@@ -73,6 +74,7 @@ class TranslationPipeline:
                     output = await self.openrouter.complete(
                         system_prompt=layer.system_prompt,
                         user_prompt=build_layer_prompt(request.source_text, request.direction, completed_layers),
+                        model=selected_model,
                     )
                     result.output_text = output
                     result.status = "completed"

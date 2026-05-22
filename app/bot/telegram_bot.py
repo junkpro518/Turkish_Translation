@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 AR_TO_TR = "ar_to_tr"
 TR_TO_AR = "tr_to_ar"
 WAITING_DIRECTION_KEY = "waiting_direction"
+SELECTED_MODEL_KEY = "selected_model"
+MODEL_MENU = "model_menu"
+MODEL_PREFIX = "model:"
+
+MODEL_OPTIONS = [
+    ("qwen/qwen3-235b-a22b-2507", "Qwen 3 235B - جودة عالية ورخيص"),
+    ("deepseek/deepseek-v3.2", "DeepSeek V3.2 - قوي اقتصادي"),
+    ("google/gemini-2.5-flash-lite", "Gemini Flash Lite - سريع ورخيص"),
+    ("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet - جودة أعلى وتكلفة أعلى"),
+]
+
+
+def model_label(model_id: str) -> str:
+    for option_id, label in MODEL_OPTIONS:
+        if option_id == model_id:
+            return label
+    return model_id
 
 
 def direction_keyboard() -> InlineKeyboardMarkup:
@@ -25,9 +42,21 @@ def direction_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("عربي -> تركي", callback_data=AR_TO_TR),
                 InlineKeyboardButton("تركي -> عربي", callback_data=TR_TO_AR),
             ],
-            [InlineKeyboardButton("الدليل", callback_data="guide")],
+            [
+                InlineKeyboardButton("اختيار النموذج", callback_data=MODEL_MENU),
+                InlineKeyboardButton("الدليل", callback_data="guide"),
+            ],
         ]
     )
+
+
+def model_keyboard(selected_model: str) -> InlineKeyboardMarkup:
+    buttons = []
+    for model_id, label in MODEL_OPTIONS:
+        marker = "✓ " if model_id == selected_model else ""
+        buttons.append([InlineKeyboardButton(f"{marker}{label}", callback_data=f"{MODEL_PREFIX}{model_id}")])
+    buttons.append([InlineKeyboardButton("رجوع", callback_data="back_to_start")])
+    return InlineKeyboardMarkup(buttons)
 
 
 GUIDE_TEXT = """
@@ -35,10 +64,17 @@ GUIDE_TEXT = """
 
 طريقة الاستخدام:
 1. اضغط /start.
-2. اختر اتجاه الترجمة: عربي -> تركي أو تركي -> عربي.
-3. أرسل النص كما هو، حتى لو كان طويلا أو فيه تعبيرات عامية.
-4. انتظر حتى تمر الترجمة على الطبقات اللغوية.
-5. ستصلك النتيجة النهائية داخل مربع قابل للنسخ.
+2. إذا أردت، اضغط "اختيار النموذج" واختر المودل المناسب.
+3. اختر اتجاه الترجمة: عربي -> تركي أو تركي -> عربي.
+4. أرسل النص كما هو، حتى لو كان طويلا أو فيه تعبيرات عامية.
+5. انتظر حتى تمر الترجمة على الطبقات اللغوية.
+6. ستصلك النتيجة النهائية داخل مربع قابل للنسخ.
+
+النماذج المتاحة:
+- Qwen 3 235B: الخيار الموصى به للجودة العالية مع تكلفة منخفضة.
+- DeepSeek V3.2: خيار قوي واقتصادي للنصوص التي تحتاج تفكير أعمق.
+- Gemini Flash Lite: خيار سريع ورخيص عندما تكون السرعة أهم.
+- Claude 3.5 Sonnet: خيار جودة أعلى لكنه أغلى، مناسب للنصوص الحساسة أو الصعبة.
 
 كيف تعمل الطبقات؟
 
@@ -70,7 +106,12 @@ GUIDE_TEXT = """
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await update.message.reply_text("اختر اتجاه الترجمة:", reply_markup=direction_keyboard())
+        settings: Settings = context.application.bot_data["settings"]
+        selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
+        await update.message.reply_text(
+            f"اختر اتجاه الترجمة:\nالنموذج الحالي: {model_label(selected_model)}",
+            reply_markup=direction_keyboard(),
+        )
 
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -88,13 +129,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.reply_text(GUIDE_TEXT, reply_markup=direction_keyboard())
         return
 
+    settings: Settings = context.application.bot_data["settings"]
+    selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
+
+    if query.data == MODEL_MENU:
+        await query.message.reply_text(
+            f"اختر نموذج الترجمة:\nالحالي: {model_label(selected_model)}",
+            reply_markup=model_keyboard(selected_model),
+        )
+        return
+
+    if query.data and query.data.startswith(MODEL_PREFIX):
+        model_id = query.data.removeprefix(MODEL_PREFIX)
+        allowed_models = {option_id for option_id, _ in MODEL_OPTIONS}
+        if model_id not in allowed_models:
+            await query.message.reply_text("النموذج غير معروف. اختر من القائمة.")
+            return
+        context.user_data[SELECTED_MODEL_KEY] = model_id
+        await query.message.reply_text(
+            f"تم اختيار النموذج:\n{model_label(model_id)}\n\nاختر اتجاه الترجمة الآن:",
+            reply_markup=direction_keyboard(),
+        )
+        return
+
+    if query.data == "back_to_start":
+        await query.message.reply_text(
+            f"اختر اتجاه الترجمة:\nالنموذج الحالي: {model_label(selected_model)}",
+            reply_markup=direction_keyboard(),
+        )
+        return
+
     if query.data not in {AR_TO_TR, TR_TO_AR}:
         await query.message.reply_text("اختيار غير معروف. اضغط /start للمحاولة من جديد.")
         return
 
     context.user_data[WAITING_DIRECTION_KEY] = query.data
     label = "العربية إلى التركية" if query.data == AR_TO_TR else "التركية إلى العربية"
-    await query.message.reply_text(f"تم اختيار الترجمة من {label}. أرسل النص الآن.")
+    await query.message.reply_text(
+        f"تم اختيار الترجمة من {label}.\nالنموذج: {model_label(selected_model)}\nأرسل النص الآن."
+    )
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -116,6 +189,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     session_factory: async_sessionmaker = context.application.bot_data["session_factory"]
     settings: Settings = context.application.bot_data["settings"]
+    selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
     pipeline = TranslationPipeline(settings)
 
     async with session_factory() as session:
@@ -126,7 +200,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             telegram_user_id=update.effective_user.id if update.effective_user else None,
             telegram_chat_id=update.effective_chat.id if update.effective_chat else None,
         )
-        request = await pipeline.run(session, request)
+        request = await pipeline.run(session, request, model=selected_model)
 
     if request.status == "completed" and request.final_translation:
         await status_message.edit_text("اكتملت الترجمة. النتيجة:")

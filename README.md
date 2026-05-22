@@ -34,7 +34,7 @@ For local development, keep `DATABASE_URL=sqlite+aiosqlite:///./data/app.db`.
 - `POSTGRES_USER`: PostgreSQL user for Docker deployment.
 - `POSTGRES_PASSWORD`: PostgreSQL password for Docker deployment.
 - `DATABASE_URL`: Optional PostgreSQL or SQLite SQLAlchemy URL. Docker Compose builds it from the PostgreSQL variables.
-- `OPENROUTER_MODEL`: Model used for all layers unless code config is changed.
+- `OPENROUTER_MODEL`: Default model used for all layers unless the Telegram user picks another model from the bot.
 - `APP_BASE_URL`: Public app URL, sent to OpenRouter as metadata.
 - `SESSION_SECRET`: Random secret for dashboard sessions.
 - `BOT_POLLING`: `true` to run Telegram polling in the FastAPI process.

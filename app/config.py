@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")
     admin_password: str = Field(default="change-this-password", alias="ADMIN_PASSWORD")
     database_url: str = Field(default="sqlite+aiosqlite:///./data/app.db", alias="DATABASE_URL")
-    openrouter_model: str = Field(default="anthropic/claude-3.5-sonnet", alias="OPENROUTER_MODEL")
+    openrouter_model: str = Field(default="qwen/qwen3-235b-a22b-2507", alias="OPENROUTER_MODEL")
     app_base_url: str = Field(default="http://localhost:8000", alias="APP_BASE_URL")
     session_secret: str = Field(default="change-this-random-secret", alias="SESSION_SECRET")
     bot_polling: bool = Field(default=True, alias="BOT_POLLING")
