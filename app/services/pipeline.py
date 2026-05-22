@@ -1,4 +1,5 @@
 import time
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -6,6 +7,8 @@ from app.config import Settings
 from app.models.translation import TranslationLayerResult, TranslationRequest
 from app.services.layers import LAYER_DEFINITIONS, direction_label
 from app.services.openrouter import OpenRouterClient
+
+ProgressCallback = Callable[[TranslationRequest, list[TranslationLayerResult]], Awaitable[None]]
 
 
 def build_layer_prompt(
@@ -47,7 +50,13 @@ class TranslationPipeline:
         self.settings = settings
         self.openrouter = openrouter_client or OpenRouterClient(settings)
 
-    async def run(self, session: AsyncSession, request: TranslationRequest, model: str | None = None) -> TranslationRequest:
+    async def run(
+        self,
+        session: AsyncSession,
+        request: TranslationRequest,
+        model: str | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> TranslationRequest:
         selected_model = model or self.settings.openrouter_model
         request.status = "running"
         request.error = None
@@ -68,6 +77,8 @@ class TranslationPipeline:
                 session.add(result)
                 await session.commit()
                 await session.refresh(result)
+                if on_progress:
+                    await on_progress(request, [*completed_layers, result])
 
                 started = time.perf_counter()
                 try:
@@ -82,6 +93,9 @@ class TranslationPipeline:
                     completed_layers.append(result)
                     if layer.position == 7:
                         request.final_translation = extract_final_translation(output)
+                    await session.commit()
+                    if on_progress:
+                        await on_progress(request, completed_layers)
                 except Exception as exc:
                     result.status = "failed"
                     result.error = str(exc)
@@ -89,13 +103,15 @@ class TranslationPipeline:
                     request.status = "failed"
                     request.error = f"{layer.name}: {exc}"
                     await session.commit()
+                    if on_progress:
+                        await on_progress(request, [*completed_layers, result])
                     return request
-
-                await session.commit()
 
             request.status = "completed"
             await session.commit()
             await session.refresh(request)
+            if on_progress:
+                await on_progress(request, completed_layers)
             return request
         except Exception as exc:
             request.status = "failed"

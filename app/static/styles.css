@@ -203,7 +203,7 @@ tbody tr:hover {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 14px;
 }
@@ -227,6 +227,19 @@ pre {
 
 .layers {
   margin-top: 24px;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 14px;
 }
 
 .layer {
@@ -264,6 +277,7 @@ dd {
 @media (max-width: 720px) {
   .topbar,
   .page-head,
+  .section-head,
   .layer header {
     align-items: stretch;
     flex-direction: column;

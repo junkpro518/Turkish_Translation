@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.database import get_session
 from app.dependencies.auth import require_admin
+from app.services.layers import LAYER_DEFINITIONS
 from app.services.translations import get_translation_request, list_translation_requests
 
 router = APIRouter()
@@ -52,4 +53,13 @@ async def request_detail(request_id: int, request: Request, session: AsyncSessio
     translation_request = await get_translation_request(session, request_id)
     if translation_request is None:
         return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
-    return templates.TemplateResponse("detail.html", {"request": request, "item": translation_request})
+    layer_by_position = {layer.position: layer for layer in translation_request.layers}
+    return templates.TemplateResponse(
+        "detail.html",
+        {
+            "request": request,
+            "item": translation_request,
+            "layer_definitions": LAYER_DEFINITIONS,
+            "layer_by_position": layer_by_position,
+        },
+    )

@@ -2,11 +2,13 @@ import html
 import logging
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import Settings
+from app.models.translation import TranslationLayerResult, TranslationRequest
+from app.services.layers import LAYER_DEFINITIONS
 from app.services.pipeline import TranslationPipeline
 from app.services.translations import create_translation_request
 from app.utils import chunk_text
@@ -19,6 +21,10 @@ WAITING_DIRECTION_KEY = "waiting_direction"
 SELECTED_MODEL_KEY = "selected_model"
 MODEL_MENU = "model_menu"
 MODEL_PREFIX = "model:"
+BTN_AR_TO_TR = "عربي -> تركي"
+BTN_TR_TO_AR = "تركي -> عربي"
+BTN_MODEL = "اختيار النموذج"
+BTN_GUIDE = "الدليل"
 
 MODEL_OPTIONS = [
     ("qwen/qwen3-235b-a22b-2507", "Qwen 3 235B - جودة عالية ورخيص"),
@@ -33,6 +39,17 @@ def model_label(model_id: str) -> str:
         if option_id == model_id:
             return label
     return model_id
+
+
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(BTN_AR_TO_TR), KeyboardButton(BTN_TR_TO_AR)],
+            [KeyboardButton(BTN_MODEL), KeyboardButton(BTN_GUIDE)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def direction_keyboard() -> InlineKeyboardMarkup:
@@ -110,13 +127,67 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
         await update.message.reply_text(
             f"اختر اتجاه الترجمة:\nالنموذج الحالي: {model_label(selected_model)}",
-            reply_markup=direction_keyboard(),
+            reply_markup=main_keyboard(),
         )
 
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await update.message.reply_text(GUIDE_TEXT, reply_markup=direction_keyboard())
+        await update.message.reply_text(GUIDE_TEXT, reply_markup=main_keyboard())
+
+
+async def show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
+    await update.message.reply_text(
+        f"اختر نموذج الترجمة:\nالحالي: {model_label(selected_model)}",
+        reply_markup=model_keyboard(selected_model),
+    )
+
+
+async def choose_direction(update: Update, context: ContextTypes.DEFAULT_TYPE, direction: str) -> None:
+    if not update.message:
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
+    context.user_data[WAITING_DIRECTION_KEY] = direction
+    label = "العربية إلى التركية" if direction == AR_TO_TR else "التركية إلى العربية"
+    await update.message.reply_text(
+        f"تم اختيار الترجمة من {label}.\nالنموذج: {model_label(selected_model)}\nأرسل النص الآن.",
+        reply_markup=main_keyboard(),
+    )
+
+
+def render_progress_text(request: TranslationRequest, layers: list[TranslationLayerResult], model: str) -> str:
+    by_position = {layer.position: layer for layer in layers}
+    status_icons = {
+        "pending": "⏳",
+        "running": "🔄",
+        "completed": "✅",
+        "failed": "❌",
+    }
+    lines = [
+        "حالة الترجمة عبر الطبقات السبع:",
+        f"النموذج: {model_label(model)}",
+        f"طلب #{request.id}",
+        "",
+    ]
+    for definition in LAYER_DEFINITIONS:
+        layer = by_position.get(definition.position)
+        status = layer.status if layer else "pending"
+        icon = status_icons.get(status, "•")
+        duration = f" - {layer.duration_ms}ms" if layer and layer.duration_ms else ""
+        lines.append(f"{icon} {definition.position}. {definition.name}{duration}")
+    lines.append("")
+    if request.status == "completed":
+        lines.append("اكتملت كل الطبقات. أرسل لك الترجمة النهائية الآن.")
+    elif request.status == "failed":
+        lines.append(f"تعذر إكمال الترجمة: {request.error or 'خطأ غير معروف'}")
+    else:
+        lines.append("لا تقفل المحادثة. سيتم تحديث هذه الرسالة بعد كل طبقة.")
+    return "\n".join(lines)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -126,7 +197,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
 
     if query.data == "guide":
-        await query.message.reply_text(GUIDE_TEXT, reply_markup=direction_keyboard())
+        await query.message.reply_text(GUIDE_TEXT, reply_markup=main_keyboard())
         return
 
     settings: Settings = context.application.bot_data["settings"]
@@ -148,14 +219,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data[SELECTED_MODEL_KEY] = model_id
         await query.message.reply_text(
             f"تم اختيار النموذج:\n{model_label(model_id)}\n\nاختر اتجاه الترجمة الآن:",
-            reply_markup=direction_keyboard(),
+            reply_markup=main_keyboard(),
         )
         return
 
     if query.data == "back_to_start":
         await query.message.reply_text(
             f"اختر اتجاه الترجمة:\nالنموذج الحالي: {model_label(selected_model)}",
-            reply_markup=direction_keyboard(),
+            reply_markup=main_keyboard(),
         )
         return
 
@@ -174,9 +245,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not update.message or not update.message.text:
         return
 
+    menu_text = update.message.text.strip()
+    if menu_text == BTN_GUIDE:
+        await guide(update, context)
+        return
+    if menu_text == BTN_MODEL:
+        await show_model_menu(update, context)
+        return
+    if menu_text == BTN_AR_TO_TR:
+        await choose_direction(update, context, AR_TO_TR)
+        return
+    if menu_text == BTN_TR_TO_AR:
+        await choose_direction(update, context, TR_TO_AR)
+        return
+
     direction = context.user_data.get(WAITING_DIRECTION_KEY)
     if not direction:
-        await update.message.reply_text("اختر اتجاه الترجمة أولا:", reply_markup=direction_keyboard())
+        await update.message.reply_text("اختر اتجاه الترجمة أولا من الأزرار:", reply_markup=main_keyboard())
         return
 
     source_text = update.message.text.strip()
@@ -185,12 +270,21 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     context.user_data.pop(WAITING_DIRECTION_KEY, None)
-    status_message = await update.message.reply_text("جاري معالجة النص عبر الطبقات اللغوية...")
+    status_message = await update.message.reply_text(
+        "بدأت معالجة النص. سأعرض لك حالة الطبقات السبع هنا.",
+        reply_markup=main_keyboard(),
+    )
 
     session_factory: async_sessionmaker = context.application.bot_data["session_factory"]
     settings: Settings = context.application.bot_data["settings"]
     selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
     pipeline = TranslationPipeline(settings)
+
+    async def update_progress(request: TranslationRequest, layers: list[TranslationLayerResult]) -> None:
+        try:
+            await status_message.edit_text(render_progress_text(request, layers, selected_model))
+        except Exception as exc:
+            logger.warning("Could not update translation progress message: %s", exc)
 
     async with session_factory() as session:
         request = await create_translation_request(
@@ -200,7 +294,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             telegram_user_id=update.effective_user.id if update.effective_user else None,
             telegram_chat_id=update.effective_chat.id if update.effective_chat else None,
         )
-        request = await pipeline.run(session, request, model=selected_model)
+        await update_progress(request, [])
+        request = await pipeline.run(session, request, model=selected_model, on_progress=update_progress)
 
     if request.status == "completed" and request.final_translation:
         await status_message.edit_text("اكتملت الترجمة. النتيجة:")

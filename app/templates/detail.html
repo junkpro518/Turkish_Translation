@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block title %}طلب #{{ item.id }}{% endblock %}
+{% block head %}
+{% if item.status == "running" %}
+<meta http-equiv="refresh" content="8">
+{% endif %}
+{% endblock %}
 {% block content %}
 <section class="page-head">
   <div>
@@ -22,6 +27,10 @@
     <h2>Telegram User</h2>
     <p>{{ item.telegram_user_id or "-" }}</p>
   </article>
+  <article>
+    <h2>الطبقات المكتملة</h2>
+    <p>{{ item.layers|selectattr("status", "equalto", "completed")|list|length }}/7</p>
+  </article>
 </section>
 
 <section class="text-block">
@@ -35,25 +44,29 @@
 </section>
 
 <section class="layers">
-  <h2>تحليل الطبقات</h2>
-  {% for layer in item.layers %}
+  <div class="section-head">
+    <h2>عمليات الطبقات السبع</h2>
+    {% if item.status == "running" %}
+    <span class="hint">يتم تحديث الصفحة تلقائياً كل 8 ثواني أثناء التنفيذ.</span>
+    {% endif %}
+  </div>
+  {% for definition in layer_definitions %}
+  {% set layer = layer_by_position.get(definition.position) %}
   <article class="layer">
     <header>
-      <h3>{{ layer.position }}. {{ layer.name }}</h3>
-      <span class="status {{ layer.status }}">{{ layer.status }}</span>
+      <h3>{{ definition.position }}. {{ definition.name }}</h3>
+      <span class="status {{ layer.status if layer else "pending" }}">{{ layer.status if layer else "pending" }}</span>
     </header>
     <dl>
       <dt>النموذج</dt>
-      <dd>{{ layer.model }}</dd>
+      <dd>{{ layer.model if layer else "-" }}</dd>
       <dt>زمن التنفيذ</dt>
-      <dd>{{ layer.duration_ms or "-" }} ms</dd>
+      <dd>{{ (layer.duration_ms ~ " ms") if layer and layer.duration_ms else "-" }}</dd>
       <dt>ملخص المدخلات</dt>
-      <dd>{{ layer.input_summary or "-" }}</dd>
+      <dd>{{ layer.input_summary if layer and layer.input_summary else "-" }}</dd>
     </dl>
-    <pre>{{ layer.output_text or layer.error or "-" }}</pre>
+    <pre>{{ layer.output_text if layer and layer.output_text else layer.error if layer and layer.error else "لم تبدأ هذه الطبقة بعد." }}</pre>
   </article>
-  {% else %}
-  <p class="empty">لا توجد طبقات محفوظة لهذا الطلب.</p>
   {% endfor %}
 </section>
 {% endblock %}
