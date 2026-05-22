@@ -16,6 +16,7 @@ services:
       - internal
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
       - "traefik.http.routers.turkish-translation.rule=Host(`turkish-translation.junkpro.duckdns.org`)"
       - "traefik.http.routers.turkish-translation.entrypoints=websecure"
       - "traefik.http.routers.turkish-translation.tls.certresolver=letsencrypt"
