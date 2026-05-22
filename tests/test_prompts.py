@@ -31,3 +31,9 @@ def test_sacred_prompt_allows_preserving_prophet_symbol_and_better_exception_wor
     assert "ﷺ = ﷺ" in SACRED_SYSTEM_PROMPT
     assert "dönmeyene kadar hariç" in SACRED_SYSTEM_PROMPT
     assert "Ancak bir kimse canıyla ve malıyla çıkıp da bunlardan hiçbir şeyle geri dönmezse, o müstesnadır." in SACRED_SYSTEM_PROMPT
+
+
+def test_sacred_prompt_prefers_accuracy_and_contemporary_religious_turkish() -> None:
+    assert "إذا كانت الترجمة الطبيعية قد تُضعف الدقة في النصوص الشرعية، فاختر الدقة" in SACRED_SYSTEM_PROMPT
+    assert "لا تستخدم لغة عثمانية قديمة أو ثقيلة" in SACRED_SYSTEM_PROMPT
+    assert "استخدم تركية دينية معاصرة ومفهومة" in SACRED_SYSTEM_PROMPT
