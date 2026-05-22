@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}طلبات الترجمة{% endblock %}
+{% block content %}
+<section class="page-head">
+  <h1>طلبات الترجمة</h1>
+  <p>{{ requests|length }} طلب محفوظ</p>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>الوقت</th>
+        <th>الاتجاه</th>
+        <th>الحالة</th>
+        <th>النص الأصلي</th>
+        <th>الترجمة النهائية</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in requests %}
+      <tr onclick="window.location='/admin/requests/{{ item.id }}'">
+        <td>{{ item.created_at }}</td>
+        <td>{{ "عربي -> تركي" if item.direction == "ar_to_tr" else "تركي -> عربي" }}</td>
+        <td><span class="status {{ item.status }}">{{ item.status }}</span></td>
+        <td class="clip">{{ item.source_text }}</td>
+        <td class="clip">{{ item.final_translation or item.error or "-" }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5" class="empty">لا توجد طلبات بعد.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

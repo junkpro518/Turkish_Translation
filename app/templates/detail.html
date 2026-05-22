@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}طلب #{{ item.id }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <a href="/admin" class="back">رجوع</a>
+    <h1>طلب #{{ item.id }}</h1>
+  </div>
+  <span class="status {{ item.status }}">{{ item.status }}</span>
+</section>
+
+<section class="summary-grid">
+  <article>
+    <h2>الاتجاه</h2>
+    <p>{{ "عربي -> تركي" if item.direction == "ar_to_tr" else "تركي -> عربي" }}</p>
+  </article>
+  <article>
+    <h2>وقت الإنشاء</h2>
+    <p>{{ item.created_at }}</p>
+  </article>
+  <article>
+    <h2>Telegram User</h2>
+    <p>{{ item.telegram_user_id or "-" }}</p>
+  </article>
+</section>
+
+<section class="text-block">
+  <h2>النص الأصلي</h2>
+  <pre>{{ item.source_text }}</pre>
+</section>
+
+<section class="text-block">
+  <h2>الترجمة النهائية</h2>
+  <pre>{{ item.final_translation or item.error or "-" }}</pre>
+</section>
+
+<section class="layers">
+  <h2>تحليل الطبقات</h2>
+  {% for layer in item.layers %}
+  <article class="layer">
+    <header>
+      <h3>{{ layer.position }}. {{ layer.name }}</h3>
+      <span class="status {{ layer.status }}">{{ layer.status }}</span>
+    </header>
+    <dl>
+      <dt>النموذج</dt>
+      <dd>{{ layer.model }}</dd>
+      <dt>زمن التنفيذ</dt>
+      <dd>{{ layer.duration_ms or "-" }} ms</dd>
+      <dt>ملخص المدخلات</dt>
+      <dd>{{ layer.input_summary or "-" }}</dd>
+    </dl>
+    <pre>{{ layer.output_text or layer.error or "-" }}</pre>
+  </article>
+  {% else %}
+  <p class="empty">لا توجد طبقات محفوظة لهذا الطلب.</p>
+  {% endfor %}
+</section>
+{% endblock %}

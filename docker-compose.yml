@@ -1,0 +1,50 @@
+services:
+  turkish-translation:
+    build: .
+    image: turkish-translation:latest
+    container_name: turkish-translation
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@turkish-translation-db:5432/${POSTGRES_DB}
+    depends_on:
+      turkish-translation-db:
+        condition: service_healthy
+    networks:
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.turkish-translation.rule=Host(`turkish-translation.junkpro.duckdns.org`)"
+      - "traefik.http.routers.turkish-translation.entrypoints=websecure"
+      - "traefik.http.routers.turkish-translation.tls.certresolver=letsencrypt"
+      - "traefik.http.services.turkish-translation.loadbalancer.server.port=8000"
+    restart: unless-stopped
+
+  turkish-translation-db:
+    image: postgres:16-alpine
+    container_name: turkish-translation-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - turkish_translation_postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  turkish_translation_postgres_data:
+
+networks:
+  proxy:
+    external: true
+  internal:
+    driver: bridge

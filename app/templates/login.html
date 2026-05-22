@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}تسجيل الدخول{% endblock %}
+{% block nav %}{% endblock %}
+{% block content %}
+<section class="login-panel">
+  <h1>تسجيل الدخول</h1>
+  <form method="post" action="/login" class="form">
+    <label>
+      اسم المستخدم
+      <input name="username" autocomplete="username" required>
+    </label>
+    <label>
+      كلمة المرور
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+    <button type="submit">دخول</button>
+  </form>
+</section>
+{% endblock %}
