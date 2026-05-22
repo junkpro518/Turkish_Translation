@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -10,8 +10,8 @@ class TranslationRequest(Base):
     __tablename__ = "translation_requests"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    telegram_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    telegram_chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
     source_text: Mapped[str] = mapped_column(Text, nullable=False)
     final_translation: Mapped[str | None] = mapped_column(Text, nullable=True)

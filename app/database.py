@@ -1,6 +1,7 @@
 import os
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -30,6 +31,16 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if conn.dialect.name == "postgresql":
+            await conn.execute(
+                text(
+                    """
+                    ALTER TABLE translation_requests
+                    ALTER COLUMN telegram_user_id TYPE BIGINT,
+                    ALTER COLUMN telegram_chat_id TYPE BIGINT
+                    """
+                )
+            )
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

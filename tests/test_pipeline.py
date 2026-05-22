@@ -70,3 +70,19 @@ async def test_pipeline_uses_selected_model_override() -> None:
         assert fake_client.models == ["selected-model"] * 7
 
     await engine.dispose()
+
+
+async def test_translation_request_accepts_large_telegram_ids() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    large_id = 5_464_178_168
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "مرحبا", large_id, large_id)
+
+        assert request.telegram_user_id == large_id
+        assert request.telegram_chat_id == large_id
+
+    await engine.dispose()
