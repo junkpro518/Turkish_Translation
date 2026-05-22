@@ -10,18 +10,46 @@ class FakeOpenRouterClient:
     def __init__(self):
         self.calls = 0
         self.models = []
+        self.system_prompts = []
+        self.user_prompts = []
 
     async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
         self.calls += 1
         self.models.append(model)
-        if self.calls == 7:
-            return "FINAL_TRANSLATION:\nMerhaba dünya\n\nBRIEF_REASON:\nNatural Turkish."
+        self.system_prompts.append(system_prompt)
+        self.user_prompts.append(user_prompt)
+        if self.calls == 1:
+            return (
+                "detected_mode: general\n"
+                "recommended_mode: general\n"
+                "has_sacred_segment: false\n"
+                "freedom_level: medium\n"
+                "allow_paraphrase: true\n"
+                "sensitive_terms: لا يوجد\n"
+                "warnings: لا يوجد"
+            )
+        if self.calls == 8:
+            return "FINAL_TRANSLATION:\nMerhaba dünya\n\nBRIEF_REASON:\nNatural Turkish.\n\nWARNINGS:\nلا يوجد"
         return f"Layer {self.calls} analysis"
 
 
 def test_extract_final_translation_with_reason() -> None:
     text = "FINAL_TRANSLATION:\nMerhaba dünya\n\nBRIEF_REASON:\nNatural Turkish."
     assert extract_final_translation(text) == "Merhaba dünya"
+
+
+def test_extract_final_translation_stops_before_ek_not() -> None:
+    text = (
+        "FINAL_TRANSLATION:\n"
+        "Peygamber sallallahu aleyhi ve sellem şöyle buyurdu...\n\n"
+        "EK NOT:\n"
+        "Bu açıklama metnin aslından değil, ek bir nottur: Ek açıklama.\n\n"
+        "BRIEF_REASON:\n"
+        "Metin ile ek not ayrıldı.\n\n"
+        "WARNINGS:\n"
+        "لا يوجد"
+    )
+    assert extract_final_translation(text) == "Peygamber sallallahu aleyhi ve sellem şöyle buyurdu..."
 
 
 async def test_pipeline_persists_all_layers_and_final_translation() -> None:
@@ -41,11 +69,11 @@ async def test_pipeline_persists_all_layers_and_final_translation() -> None:
 
         assert result.status == "completed"
         assert result.final_translation == "Merhaba dünya"
-        assert len(result.layers) == 7
+        assert len(result.layers) == 8
         assert all(layer.status == "completed" for layer in result.layers)
         assert all(layer.model == "test-model" for layer in result.layers)
-        assert fake_client.calls == 7
-        assert fake_client.models == ["test-model"] * 7
+        assert fake_client.calls == 8
+        assert fake_client.models == ["test-model"] * 8
 
     await engine.dispose()
 
@@ -67,7 +95,69 @@ async def test_pipeline_uses_selected_model_override() -> None:
 
         assert result.status == "completed"
         assert all(layer.model == "selected-model" for layer in result.layers)
-        assert fake_client.models == ["selected-model"] * 7
+        assert fake_client.models == ["selected-model"] * 8
+
+    await engine.dispose()
+
+
+async def test_pipeline_adds_selected_comic_prompt_only_when_comic_mode() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    fake_client = FakeOpenRouterClient()
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=fake_client)
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "ما هذا؟!", 1, 2)
+        result = await pipeline.run(session, request, translation_mode="comic")
+
+        assert result.status == "completed"
+        assert any("مترجم كوميكس ومانجا" in prompt for prompt in fake_client.system_prompts)
+        assert not any("مترجم قانوني محترف" in prompt for prompt in fake_client.system_prompts)
+
+    await engine.dispose()
+
+
+async def test_pipeline_adds_sacred_guard_when_classifier_finds_sacred_segment() -> None:
+    class SacredSegmentClient(FakeOpenRouterClient):
+        async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+            self.calls += 1
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if self.calls == 1:
+                return (
+                    "detected_mode: comic\n"
+                    "recommended_mode: comic\n"
+                    "has_sacred_segment: true\n"
+                    "freedom_level: low\n"
+                    "allow_paraphrase: false\n"
+                    "sensitive_terms: حديث\n"
+                    "warnings: يحتوي جزءا دينيا حساسا"
+                )
+            if self.calls == 8:
+                return "FINAL_TRANSLATION:\nMerhaba dünya\n\nBRIEF_REASON:\nNatural Turkish.\n\nWARNINGS:\nلا يوجد"
+            return f"Layer {self.calls} analysis"
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    fake_client = SacredSegmentClient()
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=fake_client)
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "قال النبي ﷺ...", 1, 2)
+        result = await pipeline.run(session, request)
+
+        assert result.status == "completed"
+        assert "مترجم كوميكس ومانجا" in fake_client.system_prompts[1]
+        assert "مترجم دقيق للنصوص الإسلامية" in fake_client.system_prompts[1]
 
     await engine.dispose()
 

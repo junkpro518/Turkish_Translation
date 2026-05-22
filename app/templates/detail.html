@@ -24,7 +24,7 @@
   </article>
   <article>
     <h2>الطبقات المكتملة</h2>
-    <p><span id="completed-layers">{{ item.layers|selectattr("status", "equalto", "completed")|list|length }}</span>/7</p>
+    <p><span id="completed-layers">{{ item.layers|selectattr("status", "equalto", "completed")|list|length }}</span>/<span id="total-layers">{{ total_layers }}</span></p>
   </article>
 </section>
 
@@ -40,7 +40,7 @@
 
 <section class="layers">
   <div class="section-head">
-    <h2>عمليات الطبقات السبع</h2>
+    <h2>عمليات طبقات الترجمة</h2>
     {% if item.status == "running" %}
     <span id="live-hint" class="hint">يتم تحديث الصفحة تلقائياً أثناء التنفيذ.</span>
     {% else %}
@@ -70,6 +70,7 @@
   const requestId = {{ item.id }};
   const statusEl = document.getElementById("request-status");
   const completedEl = document.getElementById("completed-layers");
+  const totalEl = document.getElementById("total-layers");
   const finalEl = document.getElementById("final-translation");
   const hintEl = document.getElementById("live-hint");
 
@@ -86,6 +87,7 @@
 
     setStatusClass(statusEl, data.status);
     completedEl.textContent = data.completed_layers;
+    totalEl.textContent = data.total_layers;
     finalEl.textContent = data.final_translation || data.error || "-";
 
     for (const layer of data.layers) {

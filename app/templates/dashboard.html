@@ -24,7 +24,7 @@
         <td>{{ item.created_at }}</td>
         <td>{{ "عربي -> تركي" if item.direction == "ar_to_tr" else "تركي -> عربي" }}</td>
         <td><span class="status {{ item.status }}">{{ item.status }}</span></td>
-        <td>{{ item.layers|selectattr("status", "equalto", "completed")|list|length }}/7</td>
+        <td>{{ item.layers|selectattr("status", "equalto", "completed")|list|length }}/{{ total_layers }}</td>
         <td class="clip">{{ item.source_text }}</td>
         <td class="clip">{{ item.final_translation or item.error or "-" }}</td>
       </tr>

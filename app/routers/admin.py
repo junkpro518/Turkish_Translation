@@ -45,7 +45,10 @@ async def logout(request: Request):
 @router.get("/admin", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def dashboard(request: Request, session: AsyncSession = Depends(get_session)):
     requests = await list_translation_requests(session)
-    return templates.TemplateResponse("dashboard.html", {"request": request, "requests": requests})
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {"request": request, "requests": requests, "total_layers": len(LAYER_DEFINITIONS)},
+    )
 
 
 @router.get("/admin/requests/{request_id}", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
@@ -61,6 +64,7 @@ async def request_detail(request_id: int, request: Request, session: AsyncSessio
             "item": translation_request,
             "layer_definitions": LAYER_DEFINITIONS,
             "layer_by_position": layer_by_position,
+            "total_layers": len(LAYER_DEFINITIONS),
         },
     )
 
@@ -94,5 +98,6 @@ async def request_status(request_id: int, session: AsyncSession = Depends(get_se
         "error": translation_request.error,
         "final_translation": translation_request.final_translation,
         "completed_layers": sum(1 for layer in translation_request.layers if layer.status == "completed"),
+        "total_layers": len(LAYER_DEFINITIONS),
         "layers": layers,
     }
