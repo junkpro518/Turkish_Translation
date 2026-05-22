@@ -19,3 +19,13 @@ def test_sacred_prompt_separates_external_notes_from_religious_text() -> None:
     assert "EK NOT" in SACRED_SYSTEM_PROMPT
     assert "FINAL_TRANSLATION يجب أن يحتوي على ترجمة النص الأصلي فقط" in SACRED_SYSTEM_PROMPT
     assert "Bu açıklama metnin aslından değil, ek bir nottur" in SACRED_SYSTEM_PROMPT
+    assert "لا تحذف هذا التعليق" in SACRED_SYSTEM_PROMPT
+    assert "إذا لم يوجد تعليق أو فائدة إضافية من المستخدم، لا تضف قسم EK NOT نهائيًا" in SACRED_SYSTEM_PROMPT
+    assert "EK NOT يحتوي على ترجمة تعليق المستخدم أو الفائدة الإضافية فقط" in SACRED_SYSTEM_PROMPT
+
+
+def test_sacred_prompt_allows_preserving_prophet_symbol_and_better_exception_wording() -> None:
+    assert "يجوز تركه كما هو" in SACRED_SYSTEM_PROMPT
+    assert "ﷺ = ﷺ" in SACRED_SYSTEM_PROMPT
+    assert "dönmeyene kadar hariç" in SACRED_SYSTEM_PROMPT
+    assert "Ancak bir kimse canıyla ve malıyla çıkıp da bunlardan hiçbir şeyle geri dönmezse, o müstesnadır." in SACRED_SYSTEM_PROMPT
