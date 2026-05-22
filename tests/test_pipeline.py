@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.database import Base
-from app.services.pipeline import TranslationPipeline, extract_final_translation
+from app.services.pipeline import TranslationPipeline, extract_ek_not, extract_final_translation, extract_warnings, split_sacred_text
 from app.services.translations import create_translation_request
 
 
@@ -50,6 +50,20 @@ def test_extract_final_translation_stops_before_ek_not() -> None:
         "لا يوجد"
     )
     assert extract_final_translation(text) == "Peygamber sallallahu aleyhi ve sellem şöyle buyurdu..."
+    assert extract_ek_not(text) == "Bu açıklama metnin aslından değil, ek bir nottur: Ek açıklama."
+    assert extract_warnings(text) == ""
+
+
+def test_split_sacred_text_moves_extra_note_outside_hadith() -> None:
+    text = (
+        "1/1249- عن ابن عباس رضي الله عنهما، قال: قال رسول الله ﷺ: ما من أيام العمل الصالح فيها أحب إلى الله من هذه الأيام رواه البخاري.\n\n"
+        "حتى انها افضل من العشر الاواخر من رمضان"
+    )
+
+    sacred_source_text, user_extra_note = split_sacred_text(text)
+
+    assert "رواه البخاري" in sacred_source_text
+    assert user_extra_note == "حتى انها افضل من العشر الاواخر من رمضان"
 
 
 async def test_pipeline_persists_all_layers_and_final_translation() -> None:
@@ -158,6 +172,32 @@ async def test_pipeline_adds_sacred_guard_when_classifier_finds_sacred_segment()
         assert result.status == "completed"
         assert "مترجم كوميكس ومانجا" in fake_client.system_prompts[1]
         assert "مترجم دقيق للنصوص الإسلامية" in fake_client.system_prompts[1]
+
+    await engine.dispose()
+
+
+async def test_pipeline_includes_sacred_split_in_prompts() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    fake_client = FakeOpenRouterClient()
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=fake_client)
+    text = (
+        "عن ابن عباس رضي الله عنهما، قال: قال رسول الله ﷺ: ما من أيام العمل الصالح فيها أحب إلى الله من هذه الأيام رواه البخاري.\n\n"
+        "حتى انها افضل من العشر الاواخر من رمضان"
+    )
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", text, 1, 2)
+        result = await pipeline.run(session, request, translation_mode="sacred")
+
+        assert result.status == "completed"
+        assert any("sacred_source_text" in prompt for prompt in fake_client.user_prompts)
+        assert any("user_extra_note" in prompt for prompt in fake_client.user_prompts)
+        assert any("حتى انها افضل من العشر الاواخر من رمضان" in prompt for prompt in fake_client.user_prompts)
 
     await engine.dispose()
 

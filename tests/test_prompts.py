@@ -22,6 +22,8 @@ def test_sacred_prompt_separates_external_notes_from_religious_text() -> None:
     assert "لا تحذف هذا التعليق" in SACRED_SYSTEM_PROMPT
     assert "إذا لم يوجد تعليق أو فائدة إضافية من المستخدم، لا تضف قسم EK NOT نهائيًا" in SACRED_SYSTEM_PROMPT
     assert "EK NOT يحتوي على ترجمة تعليق المستخدم أو الفائدة الإضافية فقط" in SACRED_SYSTEM_PROMPT
+    assert "sacred_source_text" in SACRED_SYSTEM_PROMPT
+    assert "user_extra_note" in SACRED_SYSTEM_PROMPT
 
 
 def test_sacred_prompt_allows_preserving_prophet_symbol_and_better_exception_wording() -> None:

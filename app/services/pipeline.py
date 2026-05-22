@@ -12,6 +12,7 @@ from app.services.layers import (
     SUPPORTED_TRANSLATION_MODES,
     TRANSLATION_MODE_AUTO,
     TRANSLATION_MODE_GENERAL,
+    TRANSLATION_MODE_SACRED,
     direction_label,
     mode_label,
     normalize_translation_mode,
@@ -29,6 +30,26 @@ SACRED_PATTERN = re.compile(
     r"has_sacred_segment\s*[:=]\s*(true|yes|نعم|صحيح|1)",
     re.IGNORECASE,
 )
+RELIGIOUS_SOURCE_PATTERN = re.compile(
+    r"(رواه|قال\s+رسول|رسول\s+الله|النبي|ﷺ|حديث|دعاء|آية|قال\s+الله|تعالى|رضي\s+الله)",
+    re.IGNORECASE,
+)
+SECTION_MARKERS = ["FINAL_TRANSLATION", "EK NOT", "BRIEF_REASON", "WARNINGS"]
+
+
+def split_sacred_text(source_text: str) -> tuple[str, str]:
+    text = source_text.strip()
+    parts = re.split(r"\n\s*\n+", text, maxsplit=1)
+    if len(parts) != 2:
+        return text, ""
+
+    sacred_source_text = parts[0].strip()
+    user_extra_note = parts[1].strip()
+    if not sacred_source_text or not user_extra_note:
+        return text, ""
+    if not RELIGIOUS_SOURCE_PATTERN.search(sacred_source_text):
+        return text, ""
+    return sacred_source_text, user_extra_note
 
 
 def build_layer_prompt(
@@ -45,30 +66,76 @@ def build_layer_prompt(
     if not previous:
         previous = "لا توجد طبقات سابقة."
 
+    sacred_source_text = ""
+    user_extra_note = ""
+    if effective_mode == TRANSLATION_MODE_SACRED or has_sacred_segment:
+        sacred_source_text, user_extra_note = split_sacred_text(source_text)
+
+    sacred_split_instruction = ""
+    if sacred_source_text and user_extra_note:
+        sacred_split_instruction = (
+            "تقسيم النص الديني قبل الترجمة:\n"
+            f"sacred_source_text:\n{sacred_source_text}\n\n"
+            f"user_extra_note:\n{user_extra_note}\n\n"
+            "في SACRED mode: ترجم sacred_source_text فقط داخل FINAL_TRANSLATION، "
+            "وترجم user_extra_note فقط داخل EK NOT، ولا تحذف user_extra_note ولا تدمجه في متن الحديث أو الآية أو الدعاء.\n\n"
+        )
+    elif effective_mode == TRANSLATION_MODE_SACRED or has_sacred_segment:
+        sacred_split_instruction = (
+            "تقسيم النص الديني قبل الترجمة:\n"
+            "لم يتم اكتشاف تعليق خارجي منفصل بثقة. لا تضف EK NOT إلا إذا ظهر تعليق خارجي فعلي في النص أو في تحليلات الطبقات.\n\n"
+        )
+
     return (
         f"اتجاه الترجمة: {direction_label(direction)}\n\n"
         f"وضع الترجمة الذي اختاره المستخدم: {mode_label(requested_mode)} ({requested_mode})\n"
         f"وضع الترجمة المستخدم في هذه الطبقة: {mode_label(effective_mode)} ({effective_mode})\n"
         f"هل يوجد جزء ديني/شرعي حساس داخل النص: {'نعم' if has_sacred_segment else 'لا'}\n\n"
+        f"{sacred_split_instruction}"
         f"النص الأصلي:\n{source_text}\n\n"
         f"تحليلات/نتائج الطبقات السابقة:\n{previous}\n\n"
         "التزم بدورك فقط، واكتب مخرجا واضحا قابلا للمراجعة في لوحة التحكم."
     )
 
 
-def extract_final_translation(text: str) -> str:
-    marker = "FINAL_TRANSLATION"
-    if marker not in text:
-        return text.strip()
-    after = text.split(marker, 1)[1]
+def extract_section(text: str, marker: str) -> str:
+    marker_index = text.find(marker)
+    if marker_index == -1:
+        return ""
+    after = text[marker_index + len(marker) :]
     after = after.lstrip(" :\n\r\t-")
-    reason_markers = ["EK NOT", "BRIEF_REASON", "Brief reason", "سبب مختصر", "WARNINGS"]
     end = len(after)
-    for reason_marker in reason_markers:
-        idx = after.find(reason_marker)
+    for next_marker in SECTION_MARKERS:
+        if next_marker == marker:
+            continue
+        idx = after.find(next_marker)
         if idx != -1:
             end = min(end, idx)
     return after[:end].strip(" \n\r\t:-")
+
+
+def is_empty_section(text: str) -> bool:
+    normalized = (text or "").strip().strip("-:،.").lower()
+    return normalized in {"", "لا يوجد", "none", "n/a", "yok", "yoktur"}
+
+
+def extract_final_translation(text: str) -> str:
+    final_translation = extract_section(text, "FINAL_TRANSLATION")
+    return final_translation or text.strip()
+
+
+def extract_ek_not(text: str) -> str:
+    ek_not = extract_section(text, "EK NOT")
+    if is_empty_section(ek_not):
+        return ""
+    return ek_not
+
+
+def extract_warnings(text: str) -> str:
+    warnings = extract_section(text, "WARNINGS")
+    if is_empty_section(warnings):
+        return ""
+    return warnings
 
 
 def is_auto_mode(mode: str | None) -> bool:

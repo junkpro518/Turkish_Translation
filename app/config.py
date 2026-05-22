@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     app_base_url: str = Field(default="http://localhost:8000", alias="APP_BASE_URL")
     session_secret: str = Field(default="change-this-random-secret", alias="SESSION_SECRET")
     bot_polling: bool = Field(default=True, alias="BOT_POLLING")
+    telegram_verbose_mode: bool = Field(default=False, alias="TELEGRAM_VERBOSE_MODE")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

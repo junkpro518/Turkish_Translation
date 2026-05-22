@@ -21,7 +21,7 @@ from app.services.layers import (
     TRANSLATION_MODE_SACRED,
     mode_label,
 )
-from app.services.pipeline import TranslationPipeline
+from app.services.pipeline import TranslationPipeline, extract_ek_not, extract_warnings
 from app.services.translations import create_translation_request
 from app.utils import chunk_text
 
@@ -191,14 +191,14 @@ GUIDE_TEXT = """
   سبحانه وتعالى = sübhânehu ve teâlâ
   رحمه الله = rahimehullah
 - إذا كان النص يحتوي حديثًا أو آية أو دعاء ثم أضفت تعليقًا أو فائدة من عندك، لا يدمجها داخل المتن الأصلي.
-- في النصوص الدينية يظهر قسم EK NOT للتعليقات أو الفوائد الخارجية، ويبين عند الحاجة أنها ليست من أصل النص.
+- في النصوص الدينية يظهر قسم EK NOT فقط إذا كان هناك تعليق أو فائدة خارج المتن الأصلي.
 
 شكل مخرجات النصوص الدينية:
 FINAL_TRANSLATION:
 [ترجمة النص الأصلي فقط]
 
 EK NOT:
-[تعليق أو فائدة خارج النص الأصلي. إذا لا يوجد: لا يوجد]
+[تعليق أو فائدة خارج النص الأصلي. لا يظهر هذا القسم إذا لا يوجد تعليق إضافي]
 
 BRIEF_REASON:
 [سبب مختصر]
@@ -293,8 +293,33 @@ def render_progress_text(
     layers: list[TranslationLayerResult],
     model: str,
     translation_mode: str,
+    verbose: bool = False,
     running_elapsed_secs: int | None = None,
 ) -> str:
+    if not verbose:
+        running_layer = next((layer for layer in layers if layer.status == "running"), None)
+        if request.status == "completed":
+            status_line = "تم تجهيز الترجمة."
+        elif request.status == "failed":
+            status_line = f"تعذر إكمال الترجمة: {request.error or 'خطأ غير معروف'}"
+        elif running_layer and running_layer.position <= 3:
+            status_line = "جاري تحليل النص..."
+        elif running_layer and running_layer.position <= 6:
+            status_line = "جاري الترجمة..."
+        elif running_layer:
+            status_line = "جاري المراجعة..."
+        else:
+            status_line = "جاري تجهيز الطلب..."
+
+        elapsed = f"\nيعمل منذ {running_elapsed_secs} ثانية" if running_elapsed_secs is not None else ""
+        return (
+            f"{status_line}\n"
+            f"النموذج: {model_label(model)}\n"
+            f"نوع النص: {mode_label(translation_mode)}\n"
+            f"طلب #{request.id}"
+            f"{elapsed}"
+        )
+
     by_position = {layer.position: layer for layer in layers}
     status_icons = {
         "pending": "⏳",
@@ -446,6 +471,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     heartbeat_task: asyncio.Task | None = None
     heartbeat_position: int | None = None
     heartbeat_started_at = 0.0
+    last_progress_text = ""
+    final_layer_output = ""
 
     async def heartbeat(request: TranslationRequest, layers: list[TranslationLayerResult]) -> None:
         while True:
@@ -453,10 +480,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if status_message is None:
                 continue
             elapsed = int(time.monotonic() - heartbeat_started_at)
-            await safe_edit_text(status_message, render_progress_text(request, layers, selected_model, selected_mode, elapsed))
+            await safe_edit_text(
+                status_message,
+                render_progress_text(
+                    request,
+                    layers,
+                    selected_model,
+                    selected_mode,
+                    settings.telegram_verbose_mode,
+                    elapsed,
+                ),
+            )
 
     async def update_progress(request: TranslationRequest, layers: list[TranslationLayerResult]) -> None:
-        nonlocal heartbeat_task, heartbeat_position, heartbeat_started_at
+        nonlocal heartbeat_task, heartbeat_position, heartbeat_started_at, last_progress_text
         running_layer = next((layer for layer in layers if layer.status == "running"), None)
         if running_layer:
             if heartbeat_position != running_layer.position:
@@ -471,7 +508,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 heartbeat_task = None
             heartbeat_position = None
         if status_message is not None:
-            await safe_edit_text(status_message, render_progress_text(request, layers, selected_model, selected_mode))
+            progress_text = render_progress_text(
+                request,
+                layers,
+                selected_model,
+                selected_mode,
+                settings.telegram_verbose_mode,
+            )
+            if progress_text != last_progress_text:
+                last_progress_text = progress_text
+                await safe_edit_text(status_message, progress_text)
 
     async with session_factory() as session:
         request = await create_translation_request(
@@ -489,6 +535,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             translation_mode=selected_mode,
             on_progress=update_progress,
         )
+        await session.refresh(request, ["layers"])
+        final_layer = max(request.layers, key=lambda layer: layer.position, default=None)
+        final_layer_output = final_layer.output_text if final_layer and final_layer.output_text else request.final_translation or ""
 
     if heartbeat_task:
         heartbeat_task.cancel()
@@ -496,7 +545,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if request.status == "completed" and request.final_translation:
         if status_message is not None:
             await safe_edit_text(status_message, "اكتملت الترجمة. النتيجة:")
-        await send_copyable_translation(update, context, request.final_translation)
+        await send_copyable_translation(update, context, build_telegram_result_text(request.final_translation, final_layer_output))
     else:
         failure_text = f"تعذرت الترجمة. السبب: {request.error or 'خطأ غير معروف'}"
         if status_message is not None:
@@ -516,6 +565,19 @@ async def send_copyable_translation(update: Update, context: ContextTypes.DEFAUL
         )
         if not sent:
             await safe_send_text(context, chat_id, chunk)
+
+
+def build_telegram_result_text(final_translation: str, final_layer_output: str) -> str:
+    parts = [final_translation.strip()]
+    ek_not = extract_ek_not(final_layer_output)
+    warnings = extract_warnings(final_layer_output)
+
+    if ek_not:
+        parts.append(f"EK NOT:\n{ek_not}")
+    if warnings:
+        parts.append(f"WARNINGS:\n{warnings}")
+
+    return "\n\n".join(part for part in parts if part.strip())
 
 
 def build_application(settings: Settings, session_factory: async_sessionmaker) -> Application:
