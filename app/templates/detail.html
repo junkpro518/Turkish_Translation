@@ -1,17 +1,12 @@
 {% extends "base.html" %}
 {% block title %}طلب #{{ item.id }}{% endblock %}
-{% block head %}
-{% if item.status == "running" %}
-<meta http-equiv="refresh" content="8">
-{% endif %}
-{% endblock %}
 {% block content %}
 <section class="page-head">
   <div>
     <a href="/admin" class="back">رجوع</a>
     <h1>طلب #{{ item.id }}</h1>
   </div>
-  <span class="status {{ item.status }}">{{ item.status }}</span>
+  <span id="request-status" class="status {{ item.status }}">{{ item.status }}</span>
 </section>
 
 <section class="summary-grid">
@@ -29,7 +24,7 @@
   </article>
   <article>
     <h2>الطبقات المكتملة</h2>
-    <p>{{ item.layers|selectattr("status", "equalto", "completed")|list|length }}/7</p>
+    <p><span id="completed-layers">{{ item.layers|selectattr("status", "equalto", "completed")|list|length }}</span>/7</p>
   </article>
 </section>
 
@@ -40,33 +35,83 @@
 
 <section class="text-block">
   <h2>الترجمة النهائية</h2>
-  <pre>{{ item.final_translation or item.error or "-" }}</pre>
+  <pre id="final-translation">{{ item.final_translation or item.error or "-" }}</pre>
 </section>
 
 <section class="layers">
   <div class="section-head">
     <h2>عمليات الطبقات السبع</h2>
     {% if item.status == "running" %}
-    <span class="hint">يتم تحديث الصفحة تلقائياً كل 8 ثواني أثناء التنفيذ.</span>
+    <span id="live-hint" class="hint">يتم تحديث الصفحة تلقائياً أثناء التنفيذ.</span>
+    {% else %}
+    <span id="live-hint" class="hint"></span>
     {% endif %}
   </div>
   {% for definition in layer_definitions %}
   {% set layer = layer_by_position.get(definition.position) %}
-  <article class="layer">
+  <article id="layer-{{ definition.position }}" class="layer">
     <header>
       <h3>{{ definition.position }}. {{ definition.name }}</h3>
-      <span class="status {{ layer.status if layer else "pending" }}">{{ layer.status if layer else "pending" }}</span>
+      <span id="layer-status-{{ definition.position }}" class="status {{ layer.status if layer else 'pending' }}">{{ layer.status if layer else "pending" }}</span>
     </header>
     <dl>
       <dt>النموذج</dt>
-      <dd>{{ layer.model if layer else "-" }}</dd>
+      <dd id="layer-model-{{ definition.position }}">{{ layer.model if layer else "-" }}</dd>
       <dt>زمن التنفيذ</dt>
-      <dd>{{ (layer.duration_ms ~ " ms") if layer and layer.duration_ms else "-" }}</dd>
+      <dd id="layer-duration-{{ definition.position }}">{{ (layer.duration_ms ~ " ms") if layer and layer.duration_ms else "-" }}</dd>
       <dt>ملخص المدخلات</dt>
-      <dd>{{ layer.input_summary if layer and layer.input_summary else "-" }}</dd>
+      <dd id="layer-input-{{ definition.position }}">{{ layer.input_summary if layer and layer.input_summary else "-" }}</dd>
     </dl>
-    <pre>{{ layer.output_text if layer and layer.output_text else layer.error if layer and layer.error else "لم تبدأ هذه الطبقة بعد." }}</pre>
+    <pre id="layer-output-{{ definition.position }}">{{ layer.output_text if layer and layer.output_text else layer.error if layer and layer.error else "لم تبدأ هذه الطبقة بعد." }}</pre>
   </article>
   {% endfor %}
 </section>
+<script>
+  const requestId = {{ item.id }};
+  const statusEl = document.getElementById("request-status");
+  const completedEl = document.getElementById("completed-layers");
+  const finalEl = document.getElementById("final-translation");
+  const hintEl = document.getElementById("live-hint");
+
+  function setStatusClass(element, status) {
+    element.className = `status ${status}`;
+    element.textContent = status;
+  }
+
+  async function refreshStatus() {
+    const response = await fetch(`/admin/requests/${requestId}/status`, {cache: "no-store"});
+    if (!response.ok) return;
+    const data = await response.json();
+    if (!data.found) return;
+
+    setStatusClass(statusEl, data.status);
+    completedEl.textContent = data.completed_layers;
+    finalEl.textContent = data.final_translation || data.error || "-";
+
+    for (const layer of data.layers) {
+      const status = document.getElementById(`layer-status-${layer.position}`);
+      const model = document.getElementById(`layer-model-${layer.position}`);
+      const duration = document.getElementById(`layer-duration-${layer.position}`);
+      const input = document.getElementById(`layer-input-${layer.position}`);
+      const output = document.getElementById(`layer-output-${layer.position}`);
+      if (!status || !model || !duration || !input || !output) continue;
+      setStatusClass(status, layer.status);
+      model.textContent = layer.model || "-";
+      duration.textContent = layer.duration_ms ? `${layer.duration_ms} ms` : "-";
+      input.textContent = layer.input_summary || "-";
+      output.textContent = layer.output_text || "-";
+    }
+
+    if (data.status === "running") {
+      hintEl.textContent = `آخر تحديث مباشر: ${new Date().toLocaleTimeString("ar-SA")}`;
+      window.setTimeout(refreshStatus, 3000);
+    } else {
+      hintEl.textContent = "";
+    }
+  }
+
+  if (statusEl.textContent === "running") {
+    window.setTimeout(refreshStatus, 1000);
+  }
+</script>
 {% endblock %}

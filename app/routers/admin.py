@@ -63,3 +63,36 @@ async def request_detail(request_id: int, request: Request, session: AsyncSessio
             "layer_by_position": layer_by_position,
         },
     )
+
+
+@router.get("/admin/requests/{request_id}/status", dependencies=[Depends(require_admin)])
+async def request_status(request_id: int, session: AsyncSession = Depends(get_session)):
+    translation_request = await get_translation_request(session, request_id)
+    if translation_request is None:
+        return {"found": False}
+
+    layer_by_position = {layer.position: layer for layer in translation_request.layers}
+    layers = []
+    for definition in LAYER_DEFINITIONS:
+        layer = layer_by_position.get(definition.position)
+        layers.append(
+            {
+                "position": definition.position,
+                "name": definition.name,
+                "status": layer.status if layer else "pending",
+                "model": layer.model if layer else "-",
+                "duration_ms": layer.duration_ms if layer else None,
+                "input_summary": layer.input_summary if layer else "-",
+                "output_text": (layer.output_text or layer.error) if layer else "لم تبدأ هذه الطبقة بعد.",
+            }
+        )
+
+    return {
+        "found": True,
+        "id": translation_request.id,
+        "status": translation_request.status,
+        "error": translation_request.error,
+        "final_translation": translation_request.final_translation,
+        "completed_layers": sum(1 for layer in translation_request.layers if layer.status == "completed"),
+        "layers": layers,
+    }

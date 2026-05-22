@@ -1,5 +1,7 @@
+import asyncio
 import html
 import logging
+import time
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
@@ -160,7 +162,12 @@ async def choose_direction(update: Update, context: ContextTypes.DEFAULT_TYPE, d
     )
 
 
-def render_progress_text(request: TranslationRequest, layers: list[TranslationLayerResult], model: str) -> str:
+def render_progress_text(
+    request: TranslationRequest,
+    layers: list[TranslationLayerResult],
+    model: str,
+    running_elapsed_secs: int | None = None,
+) -> str:
     by_position = {layer.position: layer for layer in layers}
     status_icons = {
         "pending": "⏳",
@@ -179,7 +186,10 @@ def render_progress_text(request: TranslationRequest, layers: list[TranslationLa
         status = layer.status if layer else "pending"
         icon = status_icons.get(status, "•")
         duration = f" - {layer.duration_ms}ms" if layer and layer.duration_ms else ""
-        lines.append(f"{icon} {definition.position}. {definition.name}{duration}")
+        elapsed = ""
+        if layer and layer.status == "running" and running_elapsed_secs is not None:
+            elapsed = f" - يعمل منذ {running_elapsed_secs} ثانية"
+        lines.append(f"{icon} {definition.position}. {definition.name}{duration}{elapsed}")
     lines.append("")
     if request.status == "completed":
         lines.append("اكتملت كل الطبقات. أرسل لك الترجمة النهائية الآن.")
@@ -279,8 +289,34 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     settings: Settings = context.application.bot_data["settings"]
     selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
     pipeline = TranslationPipeline(settings)
+    heartbeat_task: asyncio.Task | None = None
+    heartbeat_position: int | None = None
+    heartbeat_started_at = 0.0
+
+    async def heartbeat(request: TranslationRequest, layers: list[TranslationLayerResult]) -> None:
+        while True:
+            await asyncio.sleep(20)
+            elapsed = int(time.monotonic() - heartbeat_started_at)
+            try:
+                await status_message.edit_text(render_progress_text(request, layers, selected_model, elapsed))
+            except Exception as exc:
+                logger.warning("Could not update translation heartbeat message: %s", exc)
 
     async def update_progress(request: TranslationRequest, layers: list[TranslationLayerResult]) -> None:
+        nonlocal heartbeat_task, heartbeat_position, heartbeat_started_at
+        running_layer = next((layer for layer in layers if layer.status == "running"), None)
+        if running_layer:
+            if heartbeat_position != running_layer.position:
+                if heartbeat_task:
+                    heartbeat_task.cancel()
+                heartbeat_position = running_layer.position
+                heartbeat_started_at = time.monotonic()
+                heartbeat_task = asyncio.create_task(heartbeat(request, layers))
+        else:
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                heartbeat_task = None
+            heartbeat_position = None
         try:
             await status_message.edit_text(render_progress_text(request, layers, selected_model))
         except Exception as exc:
@@ -296,6 +332,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await update_progress(request, [])
         request = await pipeline.run(session, request, model=selected_model, on_progress=update_progress)
+
+    if heartbeat_task:
+        heartbeat_task.cancel()
 
     if request.status == "completed" and request.final_translation:
         await status_message.edit_text("اكتملت الترجمة. النتيجة:")
