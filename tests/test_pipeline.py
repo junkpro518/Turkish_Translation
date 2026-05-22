@@ -2,7 +2,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.database import Base
-from app.services.pipeline import TranslationPipeline, extract_ek_not, extract_final_translation, extract_warnings, split_sacred_text
+from app.services.pipeline import (
+    TranslationPipeline,
+    extract_ek_not,
+    extract_final_translation,
+    extract_warnings,
+    is_complete_warning,
+    split_sacred_text,
+)
 from app.services.translations import create_translation_request
 
 
@@ -52,6 +59,14 @@ def test_extract_final_translation_stops_before_ek_not() -> None:
     assert extract_final_translation(text) == "Peygamber sallallahu aleyhi ve sellem şöyle buyurdu..."
     assert extract_ek_not(text) == "Bu açıklama metnin aslından değil, ek bir nottur: Ek açıklama."
     assert extract_warnings(text) == ""
+
+
+def test_extract_warnings_hides_incomplete_warning() -> None:
+    text = "FINAL_TRANSLATION:\nMetin.\n\nWARNINGS:\nKesinlikle"
+    assert extract_warnings(text) == ""
+    assert not is_complete_warning("Bu yüzden")
+    assert not is_complete_warning("Açıklama metnin aslından değil çünkü")
+    assert is_complete_warning("Ek not metnin aslından değildir.")
 
 
 def test_split_sacred_text_moves_extra_note_outside_hadith() -> None:

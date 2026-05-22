@@ -459,7 +459,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data.pop(WAITING_DIRECTION_KEY, None)
     status_message = await safe_reply_text(
         update.message,
-        f"بدأت معالجة النص. سأعرض لك حالة {len(LAYER_DEFINITIONS)} طبقات هنا.",
+        "بدأت معالجة النص. سأرسل لك تحديثًا مختصرًا ثم الترجمة النهائية.",
         reply_markup=main_keyboard(),
     )
 

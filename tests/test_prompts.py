@@ -36,4 +36,8 @@ def test_sacred_prompt_allows_preserving_prophet_symbol_and_better_exception_wor
 def test_sacred_prompt_prefers_accuracy_and_contemporary_religious_turkish() -> None:
     assert "إذا كانت الترجمة الطبيعية قد تُضعف الدقة في النصوص الشرعية، فاختر الدقة" in SACRED_SYSTEM_PROMPT
     assert "لا تستخدم لغة عثمانية قديمة أو ثقيلة" in SACRED_SYSTEM_PROMPT
+    assert "amel-i salih" in SACRED_SYSTEM_PROMPT
+    assert "cihad-ı fîsebilillah" in SACRED_SYSTEM_PROMPT
+    assert "ziyade notu" in SACRED_SYSTEM_PROMPT
+    assert "salih amel, Allah yolunda cihad, ek not" in SACRED_SYSTEM_PROMPT
     assert "استخدم تركية دينية معاصرة ومفهومة" in SACRED_SYSTEM_PROMPT

@@ -31,3 +31,17 @@ def test_telegram_result_includes_ek_not_and_warnings_without_reason() -> None:
     assert "WARNINGS:" in text
     assert "BRIEF_REASON" not in text
     assert "Terimler korundu" not in text
+
+
+def test_telegram_result_hides_incomplete_warnings() -> None:
+    final_output = (
+        "FINAL_TRANSLATION:\nHadis metni.\n\n"
+        "BRIEF_REASON:\nTerimler korundu.\n\n"
+        "WARNINGS:\nKesinlikle"
+    )
+
+    text = build_telegram_result_text("Hadis metni.", final_output)
+
+    assert "Hadis metni." in text
+    assert "WARNINGS:" not in text
+    assert "Kesinlikle" not in text

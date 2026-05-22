@@ -35,6 +35,14 @@ RELIGIOUS_SOURCE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SECTION_MARKERS = ["FINAL_TRANSLATION", "EK NOT", "BRIEF_REASON", "WARNINGS"]
+INCOMPLETE_WARNING_ENDINGS = (
+    "kesinlikle",
+    "bu yüzden",
+    "çünkü",
+    "ancak",
+    "fakat",
+    "ama",
+)
 
 
 def split_sacred_text(source_text: str) -> tuple[str, str]:
@@ -119,6 +127,20 @@ def is_empty_section(text: str) -> bool:
     return normalized in {"", "لا يوجد", "none", "n/a", "yok", "yoktur"}
 
 
+def is_complete_warning(text: str) -> bool:
+    warning = (text or "").strip()
+    if is_empty_section(warning):
+        return False
+    normalized = warning.rstrip(" \n\r\t،,;:").lower()
+    if not normalized:
+        return False
+    if normalized.endswith(INCOMPLETE_WARNING_ENDINGS):
+        return False
+    if not re.search(r"[.!?؟。]|(?:dir|dır|dur|dür|tir|tır|tur|tür)$", normalized):
+        return False
+    return True
+
+
 def extract_final_translation(text: str) -> str:
     final_translation = extract_section(text, "FINAL_TRANSLATION")
     return final_translation or text.strip()
@@ -133,7 +155,7 @@ def extract_ek_not(text: str) -> str:
 
 def extract_warnings(text: str) -> str:
     warnings = extract_section(text, "WARNINGS")
-    if is_empty_section(warnings):
+    if not is_complete_warning(warnings):
         return ""
     return warnings
 

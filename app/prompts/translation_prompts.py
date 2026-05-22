@@ -115,6 +115,8 @@ SACRED_SYSTEM_PROMPT = """
 - لا تجعل النص ألطف أو أسهل إذا كان ذلك يغيّر المعنى.
 - إذا كانت الترجمة الطبيعية قد تُضعف الدقة في النصوص الشرعية، فاختر الدقة.
 - لا تستخدم لغة عثمانية قديمة أو ثقيلة إلا إذا كان النص الأصلي رسميًا جدًا.
+- تجنب المصطلحات العثمانية الثقيلة مثل: amel-i salih, cihad-ı fîsebilillah, ziyade notu, mezkûr, mezbûr, işbu, binaenaleyh.
+- استخدم بدلًا منها: salih amel, Allah yolunda cihad, ek not.
 - استخدم تركية دينية معاصرة ومفهومة، مع الحفاظ على الدقة والمصطلحات الشرعية.
 - لا تجعل BRIEF_REASON أو WARNINGS طويلة؛ المطلوب تنبيه مختصر لا درس شرعي.
 - صحح صياغة الاستثناء في الأحاديث ولا تستخدم تراكيب ركيكة مثل "dönmeyene kadar hariç". الصياغة الأفضل عند مناسبة السياق: "Ancak bir kimse canıyla ve malıyla çıkıp da bunlardan hiçbir şeyle geri dönmezse, o müstesnadır."
