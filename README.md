@@ -49,7 +49,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-The production Compose file is designed for the VPS layout under `/opt/projects/turkish-translation`.
+The production Compose file is designed for the VPS layout under `/opt/projects/Turkish_Translation`.
 It joins the existing external `proxy` network and exposes the app through Traefik at:
 
 ```text

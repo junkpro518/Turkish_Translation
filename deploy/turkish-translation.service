@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/projects/turkish-translation
-EnvironmentFile=/opt/projects/turkish-translation/.env
-ExecStart=/opt/projects/turkish-translation/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/opt/projects/Turkish_Translation
+EnvironmentFile=/opt/projects/Turkish_Translation/.env
+ExecStart=/opt/projects/Turkish_Translation/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
 User=www-data
