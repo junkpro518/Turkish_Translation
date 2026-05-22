@@ -13,6 +13,8 @@ from app.routers.admin import router as admin_router
 from app.routers.health import router as health_router
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
