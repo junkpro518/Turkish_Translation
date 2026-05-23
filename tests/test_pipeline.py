@@ -14,6 +14,7 @@ from app.services.pipeline import (
     extract_warnings,
     is_complete_warning,
     parse_quality_gate_output,
+    requires_strict_final_translation,
     split_sacred_text,
 )
 from app.services.translations import count_failed_translation_data, create_translation_request, delete_failed_translation_data
@@ -51,6 +52,13 @@ def test_extract_final_translation_with_reason() -> None:
     assert extract_final_translation(text) == "Merhaba dünya"
 
 
+def test_extract_final_translation_strict_requires_marker() -> None:
+    text = "Merhaba dünya\n\nBRIEF_REASON:\nNatural Turkish."
+
+    assert extract_final_translation(text) == text
+    assert extract_final_translation(text, strict=True) == ""
+
+
 def test_extract_final_translation_stops_before_ek_not() -> None:
     text = (
         "FINAL_TRANSLATION:\n"
@@ -65,6 +73,13 @@ def test_extract_final_translation_stops_before_ek_not() -> None:
     assert extract_final_translation(text) == "Peygamber sallallahu aleyhi ve sellem şöyle buyurdu..."
     assert extract_ek_not(text) == "Bu açıklama metnin aslından değil, ek bir nottur: Ek açıklama."
     assert extract_warnings(text) == ""
+
+
+def test_strict_final_translation_required_for_sensitive_modes() -> None:
+    assert requires_strict_final_translation("sacred", False)
+    assert requires_strict_final_translation("legal", False)
+    assert requires_strict_final_translation("comic", True)
+    assert not requires_strict_final_translation("general", False)
 
 
 def test_extract_warnings_hides_incomplete_warning() -> None:
@@ -121,6 +136,18 @@ def test_split_sacred_text_uses_explicit_note_marker() -> None:
 
     assert "إنما الأعمال بالنيات" in sacred_source_text
     assert user_extra_note == "هذا للتذكير فقط."
+
+
+def test_split_sacred_text_keeps_inline_yaani_inside_hadith() -> None:
+    text = (
+        "قال رسول الله ﷺ: ما من أيام العمل الصالح فيها أحب إلى الله من هذه الأيام "
+        "يعني: أيام العشر."
+    )
+
+    sacred_source_text, user_extra_note = split_sacred_text(text)
+
+    assert "يعني: أيام العشر" in sacred_source_text
+    assert user_extra_note == ""
 
 
 async def test_pipeline_persists_all_layers_and_final_translation() -> None:
@@ -319,6 +346,46 @@ async def test_quality_gate_marks_sacred_request_failed_after_retry_stays_critic
     await engine.dispose()
 
 
+async def test_sacred_final_layer_missing_final_translation_fails_without_raw_translation() -> None:
+    class MissingFinalSectionClient(FakeOpenRouterClient):
+        async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+            self.calls += 1
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if self.calls == 1:
+                return (
+                    "detected_mode: sacred\n"
+                    "recommended_mode: sacred\n"
+                    "has_sacred_segment: true\n"
+                    "freedom_level: low\n"
+                    "allow_paraphrase: false\n"
+                    "sensitive_terms: حديث\n"
+                    "warnings: لا يوجد"
+                )
+            if self.calls == 8:
+                return "Bu raw output should not be sent as final translation."
+            return f"Layer {self.calls} analysis"
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=MissingFinalSectionClient())
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "قال رسول الله ﷺ...", 1, 2)
+        result = await pipeline.run(session, request, translation_mode="sacred")
+
+        assert result.status == "failed"
+        assert result.final_translation in {None, ""}
+        assert "Missing FINAL_TRANSLATION" in (result.error or "")
+
+    await engine.dispose()
+
+
 async def test_quality_gate_warning_keeps_translation_and_appends_warning() -> None:
     class WarningQualityClient(FakeOpenRouterClient):
         async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
@@ -416,6 +483,50 @@ async def test_quality_gate_sacred_interpretive_expansion_warning_does_not_fail(
         assert result.status == "completed"
         assert client.calls == 9
         assert "Parantez içi açıklama" in (final_layer.output_text or "")
+
+    await engine.dispose()
+
+
+async def test_quality_retry_missing_final_translation_marks_quality_failed() -> None:
+    class MissingRetryFinalSectionClient(FakeOpenRouterClient):
+        async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+            self.calls += 1
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if self.calls == 1:
+                return (
+                    "detected_mode: sacred\n"
+                    "recommended_mode: sacred\n"
+                    "has_sacred_segment: true\n"
+                    "freedom_level: low\n"
+                    "allow_paraphrase: false\n"
+                    "sensitive_terms: حديث\n"
+                    "warnings: لا يوجد"
+                )
+            if self.calls == 8:
+                return "FINAL_TRANSLATION:\nYanlış anlam.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد"
+            if self.calls == 9:
+                return "issue_type: semantic_drift\nseverity: critical\nFEEDBACK:\nAnlam değişmiştir."
+            if self.calls == 10:
+                return "Retry raw output without required section."
+            return f"Layer {self.calls} analysis"
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=MissingRetryFinalSectionClient())
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "قال رسول الله ﷺ...", 1, 2)
+        result = await pipeline.run(session, request, translation_mode="sacred")
+
+        assert result.status == QUALITY_FAILED_STATUS
+        assert result.final_translation == ""
+        assert "retry output missing FINAL_TRANSLATION" in (result.error or "")
 
     await engine.dispose()
 

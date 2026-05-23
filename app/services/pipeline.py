@@ -13,6 +13,7 @@ from app.services.layers import (
     SUPPORTED_TRANSLATION_MODES,
     TRANSLATION_MODE_AUTO,
     TRANSLATION_MODE_GENERAL,
+    TRANSLATION_MODE_LEGAL,
     TRANSLATION_MODE_SACRED,
     direction_label,
     mode_label,
@@ -41,7 +42,7 @@ EXTRA_NOTE_MARKER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 EXTRA_NOTE_SENTENCE_PATTERN = re.compile(
-    r"(حتى\s+إ?ن|وهذا|وهذه|يعني|المقصود|تعليقي|ملاحظتي|فائدة|تنبيه|not:|note:)",
+    r"(حتى\s+إ?ن|وهذا|وهذه|المقصود|تعليقي|ملاحظتي|فائدة|تنبيه|not:|note:)",
     re.IGNORECASE,
 )
 SECTION_MARKERS = ["FINAL_TRANSLATION", "EK NOT", "BRIEF_REASON", "WARNINGS"]
@@ -196,9 +197,15 @@ def is_complete_warning(text: str) -> bool:
     return True
 
 
-def extract_final_translation(text: str) -> str:
+def extract_final_translation(text: str, strict: bool = False) -> str:
     final_translation = extract_section(text, "FINAL_TRANSLATION")
+    if strict and not final_translation:
+        return ""
     return final_translation or text.strip()
+
+
+def requires_strict_final_translation(effective_mode: str, has_sacred_segment: bool) -> bool:
+    return effective_mode in {TRANSLATION_MODE_SACRED, TRANSLATION_MODE_LEGAL} or has_sacred_segment
 
 
 def extract_ek_not(text: str) -> str:
@@ -338,7 +345,17 @@ class TranslationPipeline:
                         has_sacred_segment = detect_sacred_segment_from_policy_output(output)
 
                     if layer.position == LAYER_DEFINITIONS[-1].position:
-                        request.final_translation = extract_final_translation(output)
+                        strict_final = requires_strict_final_translation(effective_mode, has_sacred_segment)
+                        request.final_translation = extract_final_translation(output, strict=strict_final)
+                        if strict_final and not request.final_translation:
+                            result.status = "failed"
+                            result.error = "Missing FINAL_TRANSLATION section in final layer output"
+                            request.status = "failed"
+                            request.error = "Missing FINAL_TRANSLATION section in final layer output"
+                            await session.commit()
+                            if on_progress:
+                                await on_progress(request, [*completed_layers, result])
+                            return request
                     await session.commit()
                     if on_progress:
                         await on_progress(request, completed_layers)
@@ -423,7 +440,17 @@ class TranslationPipeline:
                 model=selected_model,
             )
             final_layer.output_text = retry_output
-            request.final_translation = extract_final_translation(retry_output)
+            request.final_translation = extract_final_translation(
+                retry_output,
+                strict=requires_strict_final_translation(effective_mode, has_sacred_segment),
+            )
+            if not request.final_translation:
+                request.status = QUALITY_FAILED_STATUS
+                request.error = "quality_gate retry output missing FINAL_TRANSLATION section"
+                await session.commit()
+                if on_progress:
+                    await on_progress(request, completed_layers)
+                return request
             await session.commit()
             await session.refresh(request)
 
