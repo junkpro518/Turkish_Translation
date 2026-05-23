@@ -52,7 +52,7 @@ MODEL_OPTIONS = [
     ("qwen/qwen3-235b-a22b-2507", "Qwen 3 235B - جودة عالية ورخيص"),
     ("deepseek/deepseek-v3.2", "DeepSeek V3.2 - قوي اقتصادي"),
     ("google/gemini-2.5-flash-lite", "Gemini Flash Lite - سريع ورخيص"),
-    ("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet - جودة أعلى وتكلفة أعلى"),
+    ("anthropic/claude-3.7-sonnet", "Claude 3.7 Sonnet - جودة أعلى وتكلفة أعلى"),
 ]
 
 MODE_OPTIONS = [
@@ -189,7 +189,7 @@ GUIDE_TEXT = """
 - Qwen 3 235B: الخيار الموصى به للجودة العالية مع تكلفة منخفضة.
 - DeepSeek V3.2: خيار قوي واقتصادي للنصوص التي تحتاج تفكير أعمق.
 - Gemini Flash Lite: خيار سريع ورخيص عندما تكون السرعة أهم.
-- Claude 3.5 Sonnet: خيار جودة أعلى لكنه أغلى، مناسب للنصوص الحساسة أو الصعبة.
+- Claude 3.7 Sonnet: خيار جودة أعلى لكنه أغلى، مناسب للنصوص الحساسة أو الصعبة.
 
 أنواع النصوص:
 - تلقائي: يحدد النظام النوع المناسب قبل الترجمة.
