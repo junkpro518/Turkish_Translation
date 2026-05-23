@@ -82,6 +82,21 @@ QUALITY_CRITICAL_ISSUES = {
     QUALITY_ISSUE_LANGUAGE_CONTAMINATION,
     QUALITY_ISSUE_STRUCTURAL,
 }
+GENERIC_QUALITY_FEEDBACK_PATTERN = re.compile(
+    r"(قد\s+تغي[ّير]+?\s+المعنى|might\s+change\s+the\s+meaning|may\s+change\s+the\s+meaning|"
+    r"meaning\s+may\s+be\s+changed|anlam\s+değişebilir|anlamı\s+değişebilir)",
+    re.IGNORECASE,
+)
+CONCRETE_CRITICAL_FEEDBACK_PATTERN = re.compile(
+    r"(language\s+contamination|chinese|中文|صيني|لغة\s+غير\s+متوقعة|"
+    r"حذف|محذوف|omitted|missing\s+(?:meaning|condition|exception)|"
+    r"قلب\s+النفي|تحويل\s+النفي|النفي\s+إلى\s+إثبات|negation|"
+    r"تحويل\s+السؤال|سؤال.*تقرير|soru.*rapor|question.*statement|"
+    r"دمج.*(?:ek\s*not|تعليق)|(?:ek\s*not|تعليق).*دمج|merged.*(?:ek\s*not|note)|"
+    r"حذف.*(?:تعليق|فائدة)|(?:external\s+note|user\s+note).*omitted|"
+    r"تغيير\s+(?:الحكم|المعنى\s+الأساسي)|semantic\s+drift\s+واضح|clear\s+semantic\s+drift|anlam\s+değişmiştir)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -247,6 +262,32 @@ def extract_quality_feedback(text: str) -> str:
     return match.group(1).strip(" \n\r\t:-")
 
 
+def is_generic_quality_feedback(feedback: str) -> bool:
+    return bool(GENERIC_QUALITY_FEEDBACK_PATTERN.search(feedback or ""))
+
+
+def has_concrete_critical_feedback(feedback: str) -> bool:
+    return bool(CONCRETE_CRITICAL_FEEDBACK_PATTERN.search(feedback or ""))
+
+
+def calibrate_quality_severity(severity: str, issue_type: str, feedback: str) -> str:
+    if issue_type in QUALITY_WARNING_ONLY_ISSUES and severity == QUALITY_CRITICAL:
+        return QUALITY_WARNING
+    if severity != QUALITY_CRITICAL:
+        if issue_type in QUALITY_CRITICAL_ISSUES and severity == QUALITY_PASS and has_concrete_critical_feedback(feedback):
+            return QUALITY_CRITICAL
+        return severity
+    if issue_type == QUALITY_ISSUE_LANGUAGE_CONTAMINATION:
+        return QUALITY_CRITICAL
+    if is_generic_quality_feedback(feedback):
+        return QUALITY_WARNING
+    if issue_type in {QUALITY_ISSUE_SEMANTIC_DRIFT, QUALITY_ISSUE_STRUCTURAL}:
+        return QUALITY_CRITICAL if has_concrete_critical_feedback(feedback) else QUALITY_WARNING
+    if not issue_type:
+        return QUALITY_CRITICAL if has_concrete_critical_feedback(feedback) else QUALITY_WARNING
+    return severity
+
+
 def parse_quality_gate_output(text: str) -> QualityGateResult:
     severity_match = re.search(r"severity\s*[:=]\s*(pass|warning|critical)", text or "", re.IGNORECASE)
     severity = severity_match.group(1).lower() if severity_match else QUALITY_PASS
@@ -261,11 +302,8 @@ def parse_quality_gate_output(text: str) -> QualityGateResult:
     issue_type = issue_type_match.group(1).lower() if issue_type_match else ""
     if issue_type not in QUALITY_ISSUE_TYPES:
         issue_type = ""
-    if issue_type in QUALITY_WARNING_ONLY_ISSUES and severity == QUALITY_CRITICAL:
-        severity = QUALITY_WARNING
-    if issue_type in QUALITY_CRITICAL_ISSUES and severity == QUALITY_PASS:
-        severity = QUALITY_CRITICAL
     feedback = extract_quality_feedback(text) or extract_section(text, "WARNINGS") or text.strip()
+    severity = calibrate_quality_severity(severity, issue_type, feedback)
     corrected_translation = extract_final_translation(text)
     if corrected_translation == text.strip() and not re.search(r"FINAL_TRANSLATION", text or ""):
         corrected_translation = ""
@@ -513,6 +551,8 @@ class TranslationPipeline:
             "أو interpretive_expansion بسيط مثل إضافة تفسير بين أقواس بدون تغيير جوهري للمعنى مثل (şehit olan) أو (daha sevaplı).\n"
             "PASS عند اختلافات أسلوبية بسيطة لا تغيّر المعنى.\n"
             "لا ترفض الترجمة بالكامل إذا كانت المشكلة فقط fluency_issue أو register_issue أو interpretive_expansion بسيط.\n\n"
+            "Do not mark as critical for fluency, register, or awkward Turkish unless the meaning is clearly changed.\n"
+            "إذا كان issue_type غير واضح أو كانت FEEDBACK عامة مثل: قد تغيّر المعنى، فاجعل severity=warning وليس critical.\n\n"
             f"اتجاه الترجمة: {direction_label(direction)}\n"
             f"mode requested: {requested_mode}\n"
             f"mode effective: {effective_mode}\n"
@@ -530,7 +570,8 @@ class TranslationPipeline:
         output = await self.openrouter.complete(
             system_prompt=(
                 "أنت quality_gate لفحص أمانة المعنى بين العربية والتركية. "
-                "عاير severity بدقة: لا تجعل مشكلات الأسلوب أو التفسير الزائد البسيط critical."
+                "عاير severity بدقة: لا تجعل مشكلات الأسلوب أو التفسير الزائد البسيط critical. "
+                "Do not mark as critical for fluency, register, or awkward Turkish unless the meaning is clearly changed."
             ),
             user_prompt=prompt,
             model=model,

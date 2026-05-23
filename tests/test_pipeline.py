@@ -5,6 +5,7 @@ from app.database import Base
 from app.services.pipeline import (
     QUALITY_CRITICAL,
     QUALITY_FAILED_STATUS,
+    QUALITY_ISSUE_FLUENCY,
     QUALITY_ISSUE_INTERPRETIVE_EXPANSION,
     QUALITY_PASS,
     QUALITY_WARNING,
@@ -114,6 +115,40 @@ def test_parse_quality_gate_downgrades_simple_interpretive_expansion_to_warning(
     )
 
     assert result.issue_type == QUALITY_ISSUE_INTERPRETIVE_EXPANSION
+    assert result.severity == QUALITY_WARNING
+
+
+def test_parse_quality_gate_downgrades_generic_critical_feedback_to_warning() -> None:
+    result = parse_quality_gate_output(
+        "severity: critical\n"
+        "FEEDBACK:\n"
+        "قد تغيّر المعنى ويحتاج النص إلى مراجعة."
+    )
+
+    assert result.issue_type == ""
+    assert result.severity == QUALITY_WARNING
+
+
+def test_parse_quality_gate_downgrades_semantic_drift_without_specific_evidence() -> None:
+    result = parse_quality_gate_output(
+        "issue_type: semantic_drift\n"
+        "severity: critical\n"
+        "FEEDBACK:\n"
+        "قد تغيّر المعنى."
+    )
+
+    assert result.severity == QUALITY_WARNING
+
+
+def test_parse_quality_gate_downgrades_fluency_critical_to_warning() -> None:
+    result = parse_quality_gate_output(
+        "issue_type: fluency_issue\n"
+        "severity: critical\n"
+        "FEEDBACK:\n"
+        "Türkçe cümle akışı doğal değildir."
+    )
+
+    assert result.issue_type == QUALITY_ISSUE_FLUENCY
     assert result.severity == QUALITY_WARNING
 
 
@@ -483,6 +518,63 @@ async def test_quality_gate_sacred_interpretive_expansion_warning_does_not_fail(
         assert result.status == "completed"
         assert client.calls == 9
         assert "Parantez içi açıklama" in (final_layer.output_text or "")
+
+    await engine.dispose()
+
+
+async def test_quality_gate_sacred_fluency_issue_warning_does_not_fail() -> None:
+    class FluencyIssueClient(FakeOpenRouterClient):
+        async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+            self.calls += 1
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if self.calls == 1:
+                return (
+                    "detected_mode: sacred\n"
+                    "recommended_mode: sacred\n"
+                    "has_sacred_segment: true\n"
+                    "freedom_level: low\n"
+                    "allow_paraphrase: false\n"
+                    "sensitive_terms: حديث ابن عباس\n"
+                    "warnings: لا يوجد"
+                )
+            if self.calls == 8:
+                return (
+                    "FINAL_TRANSLATION:\n"
+                    "Allah katında bu günlerde yapılan salih amellerden daha sevimli hiçbir amel yoktur.\n\n"
+                    "BRIEF_REASON:\n"
+                    "تم الحفاظ على البنية الشرعية للنص.\n\n"
+                    "WARNINGS:\n"
+                    "لا يوجد"
+                )
+            if self.calls == 9:
+                return (
+                    "issue_type: fluency_issue\n"
+                    "severity: critical\n"
+                    "FEEDBACK:\n"
+                    "Türkçe cümle akışı doğal değildir."
+                )
+            return f"Layer {self.calls} analysis"
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    client = FluencyIssueClient()
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=client)
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "حديث ابن عباس عن عشر ذي الحجة", 1, 2)
+        result = await pipeline.run(session, request, translation_mode="sacred")
+        await session.refresh(result, ["layers"])
+        final_layer = max(result.layers, key=lambda layer: layer.position)
+        await session.refresh(final_layer)
+
+        assert result.status == "completed"
+        assert "Türkçe cümle akışı doğal değildir." in (final_layer.output_text or "")
 
     await engine.dispose()
 
