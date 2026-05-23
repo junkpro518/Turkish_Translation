@@ -23,6 +23,9 @@ def test_sacred_policy_contains_general_fidelity_rules() -> None:
     assert "salih amel" in prompt
     assert "Allah yolunda cihad" in prompt
     assert "ek not" in prompt
+    assert "أقواس تفسيرية" in prompt
+    assert "Allah katında" in prompt
+    assert "salih amelden daha sevimli bir amel yoktur" in prompt
 
 
 def test_comic_policy_is_dialogue_oriented_without_sacred_by_default() -> None:

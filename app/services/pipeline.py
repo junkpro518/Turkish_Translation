@@ -57,6 +57,30 @@ QUALITY_PASS = "pass"
 QUALITY_WARNING = "warning"
 QUALITY_CRITICAL = "critical"
 QUALITY_FAILED_STATUS = "quality_failed"
+QUALITY_ISSUE_SEMANTIC_DRIFT = "semantic_drift"
+QUALITY_ISSUE_INTERPRETIVE_EXPANSION = "interpretive_expansion"
+QUALITY_ISSUE_REGISTER = "register_issue"
+QUALITY_ISSUE_FLUENCY = "fluency_issue"
+QUALITY_ISSUE_LANGUAGE_CONTAMINATION = "language_contamination"
+QUALITY_ISSUE_STRUCTURAL = "structural_violation"
+QUALITY_ISSUE_TYPES = {
+    QUALITY_ISSUE_SEMANTIC_DRIFT,
+    QUALITY_ISSUE_INTERPRETIVE_EXPANSION,
+    QUALITY_ISSUE_REGISTER,
+    QUALITY_ISSUE_FLUENCY,
+    QUALITY_ISSUE_LANGUAGE_CONTAMINATION,
+    QUALITY_ISSUE_STRUCTURAL,
+}
+QUALITY_WARNING_ONLY_ISSUES = {
+    QUALITY_ISSUE_INTERPRETIVE_EXPANSION,
+    QUALITY_ISSUE_REGISTER,
+    QUALITY_ISSUE_FLUENCY,
+}
+QUALITY_CRITICAL_ISSUES = {
+    QUALITY_ISSUE_SEMANTIC_DRIFT,
+    QUALITY_ISSUE_LANGUAGE_CONTAMINATION,
+    QUALITY_ISSUE_STRUCTURAL,
+}
 
 
 @dataclass(frozen=True)
@@ -64,6 +88,7 @@ class QualityGateResult:
     severity: str
     feedback: str = ""
     corrected_translation: str = ""
+    issue_type: str = ""
 
 
 def split_sacred_text(source_text: str) -> tuple[str, str]:
@@ -208,16 +233,41 @@ def detect_sacred_segment_from_policy_output(text: str) -> bool:
     return bool(SACRED_PATTERN.search(text or ""))
 
 
+def extract_quality_feedback(text: str) -> str:
+    match = re.search(r"FEEDBACK\s*[:=]\s*(.*)\Z", text or "", re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return match.group(1).strip(" \n\r\t:-")
+
+
 def parse_quality_gate_output(text: str) -> QualityGateResult:
     severity_match = re.search(r"severity\s*[:=]\s*(pass|warning|critical)", text or "", re.IGNORECASE)
     severity = severity_match.group(1).lower() if severity_match else QUALITY_PASS
     if severity not in {QUALITY_PASS, QUALITY_WARNING, QUALITY_CRITICAL}:
         severity = QUALITY_PASS
-    feedback = extract_section(text, "FEEDBACK") or extract_section(text, "WARNINGS") or text.strip()
+    issue_type_match = re.search(
+        r"(?:issue_type|issue|category)\s*[:=]\s*"
+        r"(semantic_drift|interpretive_expansion|register_issue|fluency_issue|language_contamination|structural_violation)",
+        text or "",
+        re.IGNORECASE,
+    )
+    issue_type = issue_type_match.group(1).lower() if issue_type_match else ""
+    if issue_type not in QUALITY_ISSUE_TYPES:
+        issue_type = ""
+    if issue_type in QUALITY_WARNING_ONLY_ISSUES and severity == QUALITY_CRITICAL:
+        severity = QUALITY_WARNING
+    if issue_type in QUALITY_CRITICAL_ISSUES and severity == QUALITY_PASS:
+        severity = QUALITY_CRITICAL
+    feedback = extract_quality_feedback(text) or extract_section(text, "WARNINGS") or text.strip()
     corrected_translation = extract_final_translation(text)
     if corrected_translation == text.strip() and not re.search(r"FINAL_TRANSLATION", text or ""):
         corrected_translation = ""
-    return QualityGateResult(severity=severity, feedback=feedback, corrected_translation=corrected_translation)
+    return QualityGateResult(
+        severity=severity,
+        feedback=feedback,
+        corrected_translation=corrected_translation,
+        issue_type=issue_type,
+    )
 
 
 class TranslationPipeline:
@@ -420,9 +470,22 @@ class TranslationPipeline:
         forbidden = "\n".join(f"- {item}" for item in policy.forbidden_transformations)
         prompt = (
             "راجع أمانة المعنى فقط وفق Translation Policy Engine.\n"
-            "أرجع severity واحدة فقط: pass أو warning أو critical.\n"
-            "critical يعني semantic drift واضح لا يجوز إرساله في sacred/legal.\n"
-            "warning يعني ملاحظة مفيدة لكن الترجمة قابلة للإرسال.\n\n"
+            "أرجع issue_type واحدة فقط من هذه القائمة:\n"
+            "- semantic_drift\n"
+            "- interpretive_expansion\n"
+            "- register_issue\n"
+            "- fluency_issue\n"
+            "- language_contamination\n"
+            "- structural_violation\n\n"
+            "أرجع severity واحدة فقط: pass أو warning أو critical.\n\n"
+            "Severity calibration:\n"
+            "CRITICAL فقط عند: language_contamination، تغيير المعنى الأساسي، حذف قيد أو استثناء، تحويل النفي إلى إثبات، "
+            "تحويل السؤال إلى تقرير، تغيير اليقين إلى احتمال أو العكس، دمج تعليق المستخدم داخل المتن الأصلي، "
+            "أو semantic_drift/structural_violation واضح في sacred/legal.\n"
+            "WARNING عند: fluency_issue، register_issue، لغة عثمانية ثقيلة، naturalness issues، صياغة ثقيلة، "
+            "أو interpretive_expansion بسيط مثل إضافة تفسير بين أقواس بدون تغيير جوهري للمعنى مثل (şehit olan) أو (daha sevaplı).\n"
+            "PASS عند اختلافات أسلوبية بسيطة لا تغيّر المعنى.\n"
+            "لا ترفض الترجمة بالكامل إذا كانت المشكلة فقط fluency_issue أو register_issue أو interpretive_expansion بسيط.\n\n"
             f"اتجاه الترجمة: {direction_label(direction)}\n"
             f"mode requested: {requested_mode}\n"
             f"mode effective: {effective_mode}\n"
@@ -432,12 +495,16 @@ class TranslationPipeline:
             f"النص الأصلي:\n{source_text}\n\n"
             f"الترجمة النهائية:\n{final_translation}\n\n"
             "اكتب بهذا الشكل فقط:\n"
+            "issue_type: semantic_drift|interpretive_expansion|register_issue|fluency_issue|language_contamination|structural_violation\n"
             "severity: pass|warning|critical\n"
             "FEEDBACK:\n"
             "[ملاحظة مختصرة ومكتملة، أو لا يوجد]"
         )
         output = await self.openrouter.complete(
-            system_prompt="أنت quality_gate صارم لفحص أمانة المعنى بين العربية والتركية.",
+            system_prompt=(
+                "أنت quality_gate لفحص أمانة المعنى بين العربية والتركية. "
+                "عاير severity بدقة: لا تجعل مشكلات الأسلوب أو التفسير الزائد البسيط critical."
+            ),
             user_prompt=prompt,
             model=model,
         )
@@ -465,7 +532,8 @@ class TranslationPipeline:
             f"تحليلات/نتائج الطبقات السابقة:\n{previous}\n\n"
             f"مخرج الحكم النهائي السابق:\n{previous_final_output}\n\n"
             f"ملاحظات quality_gate التي يجب تصحيحها:\n{quality_feedback}\n\n"
-            "أعد إصدار الحكم النهائي فقط، ولا تضف أي تفسير داخل FINAL_TRANSLATION."
+            "أعد إصدار الحكم النهائي فقط، ولا تضف أي تفسير داخل FINAL_TRANSLATION. "
+            "اجعل BRIEF_REASON قصيرًا ومحايدًا ووصفيًا، ولا تذكر أن ترجمة سابقة كانت خاطئة."
         )
 
     def append_quality_warning(self, final_output: str, feedback: str) -> str:

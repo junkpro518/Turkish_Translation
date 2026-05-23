@@ -126,6 +126,7 @@ SACRED_POLICY = TranslationPolicy(
         "تحويل الأمر إلى نصيحة أو النهي إلى تفضيل.",
         "تحويل العموم إلى تخصيص أو التخصيص إلى عموم.",
         "تلطيف الترجمة إذا غيّر ذلك المعنى.",
+        "إضافة أقواس تفسيرية داخل FINAL_TRANSLATION؛ إذا احتاج النص توضيحًا فليكن في WARNINGS أو EK NOT وليس داخل الترجمة الأساسية.",
         "استخدام مصطلحات ثقيلة مثل amel-i salih, cihad-ı fîsebilillah, ziyade notu, mezkûr, mezbûr, işbu, binaenaleyh.",
         "دمج تعليق المستخدم داخل متن حديث أو آية أو دعاء.",
         "حذف تعليق المستخدم بدل وضعه في EK NOT عند وجوده.",
@@ -141,6 +142,10 @@ SACRED_POLICY = TranslationPolicy(
         "هل التعليق الخارجي، إن وجد، موجود في EK NOT فقط؟",
         "هل المصطلحات الثابتة محفوظة عند الحاجة: عز وجل = azze ve celle، سبحانه وتعالى = sübhânehu ve teâlâ، صلى الله عليه وسلم = sallallahu aleyhi ve sellem، رضي الله عنه = radıyallahu anh، رضي الله عنهما = radıyallahu anhüma، رحمه الله = rahimehullah؟",
         "هل استُخدم salih amel وAllah yolunda cihad وek not بدل المصطلحات الثقيلة عند الحاجة؟",
+        "هل استُخدم Allah katında بدل التركيب غير الطبيعي Allah'a nezdinde؟",
+        "هل استُخدمت تركية دينية معاصرة ومفهومة وتجنب النص تراكيب ثقيلة مثل salih amelden daha sevimli bir amel yoktur؟",
+        "عند معنى تفضيل العمل الصالح في أيام معينة، فضّل صياغة طبيعية مثل bu günlerde yapılan salih amellerden daha sevimli hiçbir amel yoktur عند ملاءمتها للسياق.",
+        "هل BRIEF_REASON قصير ومحايد ووصفي، مثل: تم الحفاظ على البنية الشرعية للنص ومنع التفسير داخل الترجمة الأساسية؟",
     ),
     quality_gate_required=True,
 )

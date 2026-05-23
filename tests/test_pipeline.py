@@ -5,6 +5,7 @@ from app.database import Base
 from app.services.pipeline import (
     QUALITY_CRITICAL,
     QUALITY_FAILED_STATUS,
+    QUALITY_ISSUE_INTERPRETIVE_EXPANSION,
     QUALITY_PASS,
     QUALITY_WARNING,
     TranslationPipeline,
@@ -75,14 +76,30 @@ def test_extract_warnings_hides_incomplete_warning() -> None:
 
 
 def test_parse_quality_gate_output_reads_severity_and_feedback() -> None:
-    warning = parse_quality_gate_output("severity: warning\nFEEDBACK:\nEk not metnin aslından değildir.")
-    critical = parse_quality_gate_output("severity: critical\nFEEDBACK:\nSoru rapora dönüştü.")
+    warning = parse_quality_gate_output(
+        "issue_type: register_issue\nseverity: warning\nFEEDBACK:\nEk not metnin aslından değildir."
+    )
+    critical = parse_quality_gate_output(
+        "issue_type: structural_violation\nseverity: critical\nFEEDBACK:\nSoru rapora dönüştü."
+    )
     passed = parse_quality_gate_output("severity: pass\nFEEDBACK:\nلا يوجد")
 
     assert warning.severity == QUALITY_WARNING
     assert warning.feedback == "Ek not metnin aslından değildir."
     assert critical.severity == QUALITY_CRITICAL
     assert passed.severity == QUALITY_PASS
+
+
+def test_parse_quality_gate_downgrades_simple_interpretive_expansion_to_warning() -> None:
+    result = parse_quality_gate_output(
+        "issue_type: interpretive_expansion\n"
+        "severity: critical\n"
+        "FEEDBACK:\n"
+        "Parantez içi açıklama FINAL_TRANSLATION içinde yer almamalıdır."
+    )
+
+    assert result.issue_type == QUALITY_ISSUE_INTERPRETIVE_EXPANSION
+    assert result.severity == QUALITY_WARNING
 
 
 def test_split_sacred_text_moves_extra_note_outside_hadith() -> None:
@@ -341,6 +358,64 @@ async def test_quality_gate_warning_keeps_translation_and_appends_warning() -> N
 
         assert result.status == "completed"
         assert "Bir terim ayrıca kontrol edilmelidir." in (final_layer.output_text or "")
+
+    await engine.dispose()
+
+
+async def test_quality_gate_sacred_interpretive_expansion_warning_does_not_fail() -> None:
+    class InterpretiveExpansionClient(FakeOpenRouterClient):
+        async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+            self.calls += 1
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if self.calls == 1:
+                return (
+                    "detected_mode: sacred\n"
+                    "recommended_mode: sacred\n"
+                    "has_sacred_segment: true\n"
+                    "freedom_level: low\n"
+                    "allow_paraphrase: false\n"
+                    "sensitive_terms: حديث\n"
+                    "warnings: لا يوجد"
+                )
+            if self.calls == 8:
+                return (
+                    "FINAL_TRANSLATION:\n"
+                    "Bu günlerde yapılan salih amellerden daha sevimli hiçbir amel yoktur (daha sevaplı).\n\n"
+                    "BRIEF_REASON:\n"
+                    "تم الحفاظ على البنية الشرعية للنص ومنع التفسير داخل الترجمة الأساسية.\n\n"
+                    "WARNINGS:\n"
+                    "لا يوجد"
+                )
+            if self.calls == 9:
+                return (
+                    "issue_type: interpretive_expansion\n"
+                    "severity: critical\n"
+                    "FEEDBACK:\n"
+                    "Parantez içi açıklama FINAL_TRANSLATION içinde yer almamalıdır."
+                )
+            return f"Layer {self.calls} analysis"
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    client = InterpretiveExpansionClient()
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=client)
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "قال رسول الله ﷺ...", 1, 2)
+        result = await pipeline.run(session, request, translation_mode="sacred")
+        await session.refresh(result, ["layers"])
+        final_layer = max(result.layers, key=lambda layer: layer.position)
+        await session.refresh(final_layer)
+
+        assert result.status == "completed"
+        assert client.calls == 9
+        assert "Parantez içi açıklama" in (final_layer.output_text or "")
 
     await engine.dispose()
 
