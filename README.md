@@ -6,7 +6,7 @@
 
 - Telegram bot with Arabic -> Turkish and Turkish -> Arabic buttons.
 - `/guide` command explaining the workflow and translation layers.
-- Seven-layer AI translation pipeline through OpenRouter.
+- Eight-layer AI translation pipeline through OpenRouter, including Fidelity Review.
 - Final Telegram answer in a Markdown code block for easy copying.
 - FastAPI admin dashboard protected by one admin username/password.
 - Full persistence of source text, final translation, layer analysis, status, timings, and errors.
@@ -38,6 +38,7 @@ For local development, keep `DATABASE_URL=sqlite+aiosqlite:///./data/app.db`.
 - `APP_BASE_URL`: Public app URL, sent to OpenRouter as metadata.
 - `SESSION_SECRET`: Random secret for dashboard sessions.
 - `BOT_POLLING`: `true` to run Telegram polling in the FastAPI process.
+- `TELEGRAM_ADMIN_USER_IDS`: Comma-separated Telegram user IDs allowed to see admin-only bot controls.
 
 ## VPS Deployment
 

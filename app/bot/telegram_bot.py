@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import time
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
@@ -22,7 +23,7 @@ from app.services.layers import (
     mode_label,
 )
 from app.services.pipeline import TranslationPipeline, extract_ek_not, extract_warnings
-from app.services.translations import create_translation_request
+from app.services.translations import count_failed_translation_data, create_translation_request, delete_failed_translation_data
 from app.utils import chunk_text
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,9 @@ BTN_TR_TO_AR = "تركي -> عربي"
 BTN_MODEL = "اختيار النموذج"
 BTN_MODE = "نوع النص"
 BTN_GUIDE = "الدليل"
+BTN_CLEAR_FAILED = "تنظيف الطلبات الفاشلة"
+CLEAR_FAILED_CONFIRMATION = "DELETE FAILED"
+CLEAR_FAILED_PENDING_KEY = "clear_failed_pending"
 TELEGRAM_SEND_TIMEOUT_SECONDS = 12
 FINAL_TRANSLATION_CHUNK_LIMIT = 3400
 
@@ -69,16 +73,32 @@ def model_label(model_id: str) -> str:
     return model_id
 
 
-def main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton(BTN_AR_TO_TR), KeyboardButton(BTN_TR_TO_AR)],
-            [KeyboardButton(BTN_MODEL), KeyboardButton(BTN_MODE)],
-            [KeyboardButton(BTN_GUIDE)],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
+def parse_admin_user_ids(settings: Settings) -> set[int]:
+    ids: set[int] = set()
+    for raw_id in settings.telegram_admin_user_ids.replace(";", ",").split(","):
+        raw_id = raw_id.strip()
+        if not raw_id:
+            continue
+        try:
+            ids.add(int(raw_id))
+        except ValueError:
+            logger.warning("Ignoring invalid TELEGRAM_ADMIN_USER_IDS entry: %s", raw_id)
+    return ids
+
+
+def is_telegram_admin(settings: Settings, user_id: int | None) -> bool:
+    return user_id is not None and user_id in parse_admin_user_ids(settings)
+
+
+def main_keyboard(settings: Settings | None = None, user_id: int | None = None) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(BTN_AR_TO_TR), KeyboardButton(BTN_TR_TO_AR)],
+        [KeyboardButton(BTN_MODEL), KeyboardButton(BTN_MODE)],
+        [KeyboardButton(BTN_GUIDE)],
+    ]
+    if settings is not None and is_telegram_admin(settings, user_id):
+        rows.append([KeyboardButton(BTN_CLEAR_FAILED)])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 
 def direction_keyboard() -> InlineKeyboardMarkup:
@@ -244,13 +264,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         selected_mode = context.user_data.get(SELECTED_MODE_KEY, TRANSLATION_MODE_AUTO)
         await update.message.reply_text(
             f"اختر اتجاه الترجمة:\nالنموذج الحالي: {model_label(selected_model)}\nنوع النص: {mode_label(selected_mode)}",
-            reply_markup=main_keyboard(),
+            reply_markup=main_keyboard(settings, update.effective_user.id if update.effective_user else None),
         )
 
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await update.message.reply_text(GUIDE_TEXT, reply_markup=main_keyboard())
+        settings: Settings = context.application.bot_data["settings"]
+        await update.message.reply_text(
+            GUIDE_TEXT,
+            reply_markup=main_keyboard(settings, update.effective_user.id if update.effective_user else None),
+        )
 
 
 async def show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -284,8 +308,77 @@ async def choose_direction(update: Update, context: ContextTypes.DEFAULT_TYPE, d
     label = "العربية إلى التركية" if direction == AR_TO_TR else "التركية إلى العربية"
     await update.message.reply_text(
         f"تم اختيار الترجمة من {label}.\nالنموذج: {model_label(selected_model)}\nنوع النص: {mode_label(selected_mode)}\nأرسل النص الآن.",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard(settings, update.effective_user.id if update.effective_user else None),
     )
+
+
+async def show_clear_failed_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    user_id = update.effective_user.id if update.effective_user else None
+    if not is_telegram_admin(settings, user_id):
+        await update.message.reply_text("هذا الإجراء متاح للإداري فقط.")
+        return
+
+    session_factory: async_sessionmaker = context.application.bot_data["session_factory"]
+    async with session_factory() as session:
+        request_count, layer_count = await count_failed_translation_data(session)
+
+    if request_count == 0:
+        await update.message.reply_text(
+            "لا توجد طلبات فاشلة لتنظيفها.",
+            reply_markup=main_keyboard(settings, user_id),
+        )
+        return
+
+    context.user_data[CLEAR_FAILED_PENDING_KEY] = True
+    await update.message.reply_text(
+        "سيتم حذف الطلبات الفاشلة فقط من قاعدة البيانات.\n"
+        f"عدد الطلبات: {request_count}\n"
+        f"عدد الطبقات: {layer_count}\n\n"
+        f"للتأكيد اكتب بالضبط:\n{CLEAR_FAILED_CONFIRMATION}\n\n"
+        "أي رد آخر سيلغي العملية.",
+        reply_markup=main_keyboard(settings, user_id),
+    )
+
+
+async def handle_clear_failed_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    if not context.user_data.get(CLEAR_FAILED_PENDING_KEY):
+        return False
+    context.user_data.pop(CLEAR_FAILED_PENDING_KEY, None)
+    if not update.message:
+        return True
+
+    settings: Settings = context.application.bot_data["settings"]
+    user_id = update.effective_user.id if update.effective_user else None
+    if not is_telegram_admin(settings, user_id):
+        await update.message.reply_text("تم إلغاء العملية. هذا الإجراء متاح للإداري فقط.")
+        return True
+
+    if text.strip() != CLEAR_FAILED_CONFIRMATION:
+        await update.message.reply_text(
+            "تم إلغاء تنظيف قاعدة البيانات.",
+            reply_markup=main_keyboard(settings, user_id),
+        )
+        return True
+
+    session_factory: async_sessionmaker = context.application.bot_data["session_factory"]
+    async with session_factory() as session:
+        request_count, layer_count = await delete_failed_translation_data(session)
+
+    logger.info(
+        "failed_translation_cleanup user_id=%s requests_deleted=%s layers_deleted=%s at=%s",
+        user_id,
+        request_count,
+        layer_count,
+        datetime.now(timezone.utc).isoformat(),
+    )
+    await update.message.reply_text(
+        f"تم تنظيف الطلبات الفاشلة.\nالطلبات المحذوفة: {request_count}\nالطبقات المحذوفة: {layer_count}",
+        reply_markup=main_keyboard(settings, user_id),
+    )
+    return True
 
 
 def render_progress_text(
@@ -360,7 +453,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
 
     if query.data == "guide":
-        await query.message.reply_text(GUIDE_TEXT, reply_markup=main_keyboard())
+        settings: Settings = context.application.bot_data["settings"]
+        await query.message.reply_text(
+            GUIDE_TEXT,
+            reply_markup=main_keyboard(settings, query.from_user.id if query.from_user else None),
+        )
         return
 
     settings: Settings = context.application.bot_data["settings"]
@@ -390,7 +487,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data[SELECTED_MODEL_KEY] = model_id
         await query.message.reply_text(
             f"تم اختيار النموذج:\n{model_label(model_id)}\n\nاختر اتجاه الترجمة الآن:",
-            reply_markup=main_keyboard(),
+            reply_markup=main_keyboard(settings, query.from_user.id if query.from_user else None),
         )
         return
 
@@ -403,14 +500,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data[SELECTED_MODE_KEY] = mode_id
         await query.message.reply_text(
             f"تم اختيار نوع النص:\n{mode_label(mode_id)}\n\nاختر اتجاه الترجمة الآن:",
-            reply_markup=main_keyboard(),
+            reply_markup=main_keyboard(settings, query.from_user.id if query.from_user else None),
         )
         return
 
     if query.data == "back_to_start":
         await query.message.reply_text(
             f"اختر اتجاه الترجمة:\nالنموذج الحالي: {model_label(selected_model)}\nنوع النص: {mode_label(selected_mode)}",
-            reply_markup=main_keyboard(),
+            reply_markup=main_keyboard(settings, query.from_user.id if query.from_user else None),
         )
         return
 
@@ -430,8 +527,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     menu_text = update.message.text.strip()
+    if await handle_clear_failed_confirmation(update, context, menu_text):
+        return
+
     if menu_text == BTN_GUIDE:
         await guide(update, context)
+        return
+    if menu_text == BTN_CLEAR_FAILED:
+        await show_clear_failed_prompt(update, context)
         return
     if menu_text == BTN_MODEL:
         await show_model_menu(update, context)
@@ -448,7 +551,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     direction = context.user_data.get(WAITING_DIRECTION_KEY)
     if not direction:
-        await update.message.reply_text("اختر اتجاه الترجمة أولا من الأزرار:", reply_markup=main_keyboard())
+        settings: Settings = context.application.bot_data["settings"]
+        await update.message.reply_text(
+            "اختر اتجاه الترجمة أولا من الأزرار:",
+            reply_markup=main_keyboard(settings, update.effective_user.id if update.effective_user else None),
+        )
         return
 
     source_text = update.message.text.strip()
@@ -457,17 +564,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     context.user_data.pop(WAITING_DIRECTION_KEY, None)
+    session_factory: async_sessionmaker = context.application.bot_data["session_factory"]
+    settings: Settings = context.application.bot_data["settings"]
     status_message = await safe_reply_text(
         update.message,
         "بدأت معالجة النص. سأرسل لك تحديثًا مختصرًا ثم الترجمة النهائية.",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard(settings, update.effective_user.id if update.effective_user else None),
     )
 
-    session_factory: async_sessionmaker = context.application.bot_data["session_factory"]
-    settings: Settings = context.application.bot_data["settings"]
     selected_model = context.user_data.get(SELECTED_MODEL_KEY, settings.openrouter_model)
     selected_mode = context.user_data.get(SELECTED_MODE_KEY, TRANSLATION_MODE_AUTO)
     pipeline = TranslationPipeline(settings)
+    verbose_progress = settings.telegram_verbose_mode and is_telegram_admin(
+        settings, update.effective_user.id if update.effective_user else None
+    )
     heartbeat_task: asyncio.Task | None = None
     heartbeat_position: int | None = None
     heartbeat_started_at = 0.0
@@ -487,7 +597,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     layers,
                     selected_model,
                     selected_mode,
-                    settings.telegram_verbose_mode,
+                    verbose_progress,
                     elapsed,
                 ),
             )
@@ -513,7 +623,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 layers,
                 selected_model,
                 selected_mode,
-                settings.telegram_verbose_mode,
+                verbose_progress,
             )
             if progress_text != last_progress_text:
                 last_progress_text = progress_text
@@ -546,6 +656,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if status_message is not None:
             await safe_edit_text(status_message, "اكتملت الترجمة. النتيجة:")
         await send_copyable_translation(update, context, build_telegram_result_text(request.final_translation, final_layer_output))
+    elif request.status == "quality_failed":
+        failure_text = "تعذّر إرسال الترجمة لأن مراجعة الجودة وجدت احتمال تغيّر واضح في المعنى. تم حفظ الطلب للمراجعة."
+        if status_message is not None:
+            await safe_edit_text(status_message, failure_text)
+        else:
+            await safe_send_text(context, update.effective_chat.id if update.effective_chat else None, failure_text)
     else:
         failure_text = f"تعذرت الترجمة. السبب: {request.error or 'خطأ غير معروف'}"
         if status_message is not None:

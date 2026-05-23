@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     session_secret: str = Field(default="change-this-random-secret", alias="SESSION_SECRET")
     bot_polling: bool = Field(default=True, alias="BOT_POLLING")
     telegram_verbose_mode: bool = Field(default=False, alias="TELEGRAM_VERBOSE_MODE")
+    telegram_admin_user_ids: str = Field(default="", alias="TELEGRAM_ADMIN_USER_IDS")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

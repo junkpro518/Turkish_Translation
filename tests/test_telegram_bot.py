@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
-from app.bot.telegram_bot import build_telegram_result_text, render_progress_text
+from app.bot.telegram_bot import BTN_CLEAR_FAILED, build_telegram_result_text, is_telegram_admin, main_keyboard, render_progress_text
+from app.config import Settings
 from app.models.translation import TranslationLayerResult
 
 
@@ -45,3 +46,14 @@ def test_telegram_result_hides_incomplete_warnings() -> None:
     assert "Hadis metni." in text
     assert "WARNINGS:" not in text
     assert "Kesinlikle" not in text
+
+
+def test_telegram_admin_ids_control_cleanup_button_visibility() -> None:
+    settings = Settings(TELEGRAM_ADMIN_USER_IDS="111, 222")
+
+    admin_keyboard_text = [[button.text for button in row] for row in main_keyboard(settings, 111).keyboard]
+    user_keyboard_text = [[button.text for button in row] for row in main_keyboard(settings, 333).keyboard]
+
+    assert is_telegram_admin(settings, 222)
+    assert [BTN_CLEAR_FAILED] in admin_keyboard_text
+    assert [BTN_CLEAR_FAILED] not in user_keyboard_text

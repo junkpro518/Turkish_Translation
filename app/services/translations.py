@@ -1,8 +1,10 @@
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.translation import TranslationRequest
+from app.models.translation import TranslationLayerResult, TranslationRequest
+
+FAILED_CLEANUP_STATUSES = ("failed", "quality_failed")
 
 
 async def create_translation_request(
@@ -42,3 +44,34 @@ async def get_translation_request(session: AsyncSession, request_id: int) -> Tra
         .where(TranslationRequest.id == request_id)
     )
     return result.scalars().unique().one_or_none()
+
+
+async def count_failed_translation_data(session: AsyncSession) -> tuple[int, int]:
+    request_count_result = await session.execute(
+        select(func.count()).select_from(TranslationRequest).where(TranslationRequest.status.in_(FAILED_CLEANUP_STATUSES))
+    )
+    layer_count_result = await session.execute(
+        select(func.count())
+        .select_from(TranslationLayerResult)
+        .join(TranslationRequest)
+        .where(TranslationRequest.status.in_(FAILED_CLEANUP_STATUSES))
+    )
+    return int(request_count_result.scalar_one()), int(layer_count_result.scalar_one())
+
+
+async def delete_failed_translation_data(session: AsyncSession) -> tuple[int, int]:
+    request_ids_result = await session.execute(
+        select(TranslationRequest.id).where(TranslationRequest.status.in_(FAILED_CLEANUP_STATUSES))
+    )
+    request_ids = list(request_ids_result.scalars())
+    if not request_ids:
+        return 0, 0
+
+    layer_count_result = await session.execute(
+        select(func.count()).select_from(TranslationLayerResult).where(TranslationLayerResult.request_id.in_(request_ids))
+    )
+    layer_count = int(layer_count_result.scalar_one())
+    await session.execute(delete(TranslationLayerResult).where(TranslationLayerResult.request_id.in_(request_ids)))
+    await session.execute(delete(TranslationRequest).where(TranslationRequest.id.in_(request_ids)))
+    await session.commit()
+    return len(request_ids), layer_count

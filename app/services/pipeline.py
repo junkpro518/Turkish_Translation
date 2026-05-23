@@ -1,5 +1,6 @@
-import time
 import re
+import time
+from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,7 @@ from app.services.layers import (
     normalize_translation_mode,
 )
 from app.services.openrouter import OpenRouterClient
+from app.services.translation_policy import get_translation_policy
 
 ProgressCallback = Callable[[TranslationRequest, list[TranslationLayerResult]], Awaitable[None]]
 
@@ -34,6 +36,14 @@ RELIGIOUS_SOURCE_PATTERN = re.compile(
     r"(رواه|قال\s+رسول|رسول\s+الله|النبي|ﷺ|حديث|دعاء|آية|قال\s+الله|تعالى|رضي\s+الله)",
     re.IGNORECASE,
 )
+EXTRA_NOTE_MARKER_PATTERN = re.compile(
+    r"(?:^|\n)\s*(?:ملاحظة|تنبيه|فائدة|تعليق|ملحوظة|note|not|ek\s+not)\s*[:：-]\s*",
+    re.IGNORECASE,
+)
+EXTRA_NOTE_SENTENCE_PATTERN = re.compile(
+    r"(حتى\s+إ?ن|وهذا|وهذه|يعني|المقصود|تعليقي|ملاحظتي|فائدة|تنبيه|not:|note:)",
+    re.IGNORECASE,
+)
 SECTION_MARKERS = ["FINAL_TRANSLATION", "EK NOT", "BRIEF_REASON", "WARNINGS"]
 INCOMPLETE_WARNING_ENDINGS = (
     "kesinlikle",
@@ -43,21 +53,41 @@ INCOMPLETE_WARNING_ENDINGS = (
     "fakat",
     "ama",
 )
+QUALITY_PASS = "pass"
+QUALITY_WARNING = "warning"
+QUALITY_CRITICAL = "critical"
+QUALITY_FAILED_STATUS = "quality_failed"
+
+
+@dataclass(frozen=True)
+class QualityGateResult:
+    severity: str
+    feedback: str = ""
+    corrected_translation: str = ""
 
 
 def split_sacred_text(source_text: str) -> tuple[str, str]:
     text = source_text.strip()
-    parts = re.split(r"\n\s*\n+", text, maxsplit=1)
-    if len(parts) != 2:
-        return text, ""
+    marker_match = EXTRA_NOTE_MARKER_PATTERN.search(text)
+    if marker_match:
+        sacred_source_text = text[: marker_match.start()].strip()
+        user_extra_note = text[marker_match.end() :].strip()
+        if sacred_source_text and user_extra_note and RELIGIOUS_SOURCE_PATTERN.search(sacred_source_text):
+            return sacred_source_text, user_extra_note
 
-    sacred_source_text = parts[0].strip()
-    user_extra_note = parts[1].strip()
-    if not sacred_source_text or not user_extra_note:
-        return text, ""
-    if not RELIGIOUS_SOURCE_PATTERN.search(sacred_source_text):
-        return text, ""
-    return sacred_source_text, user_extra_note
+    parts = re.split(r"\n\s*\n+", text, maxsplit=1)
+    if len(parts) == 2:
+        sacred_source_text = parts[0].strip()
+        user_extra_note = parts[1].strip()
+        if sacred_source_text and user_extra_note and RELIGIOUS_SOURCE_PATTERN.search(sacred_source_text):
+            return sacred_source_text, user_extra_note
+
+    if RELIGIOUS_SOURCE_PATTERN.search(text):
+        sentence_parts = re.split(r"(?<=[.!؟?。])\s+", text, maxsplit=1)
+        if len(sentence_parts) == 2 and EXTRA_NOTE_SENTENCE_PATTERN.search(sentence_parts[1]):
+            return sentence_parts[0].strip(), sentence_parts[1].strip()
+
+    return text, ""
 
 
 def build_layer_prompt(
@@ -178,6 +208,18 @@ def detect_sacred_segment_from_policy_output(text: str) -> bool:
     return bool(SACRED_PATTERN.search(text or ""))
 
 
+def parse_quality_gate_output(text: str) -> QualityGateResult:
+    severity_match = re.search(r"severity\s*[:=]\s*(pass|warning|critical)", text or "", re.IGNORECASE)
+    severity = severity_match.group(1).lower() if severity_match else QUALITY_PASS
+    if severity not in {QUALITY_PASS, QUALITY_WARNING, QUALITY_CRITICAL}:
+        severity = QUALITY_PASS
+    feedback = extract_section(text, "FEEDBACK") or extract_section(text, "WARNINGS") or text.strip()
+    corrected_translation = extract_final_translation(text)
+    if corrected_translation == text.strip() and not re.search(r"FINAL_TRANSLATION", text or ""):
+        corrected_translation = ""
+    return QualityGateResult(severity=severity, feedback=feedback, corrected_translation=corrected_translation)
+
+
 class TranslationPipeline:
     def __init__(self, settings: Settings, openrouter_client: OpenRouterClient | None = None):
         self.settings = settings
@@ -261,6 +303,19 @@ class TranslationPipeline:
                         await on_progress(request, [*completed_layers, result])
                     return request
 
+            request = await self.apply_quality_gate(
+                session=session,
+                request=request,
+                completed_layers=completed_layers,
+                selected_model=selected_model,
+                requested_mode=requested_mode,
+                effective_mode=effective_mode,
+                has_sacred_segment=has_sacred_segment,
+                on_progress=on_progress,
+            )
+            if request.status == QUALITY_FAILED_STATUS:
+                return request
+
             request.status = "completed"
             await session.commit()
             await session.refresh(request)
@@ -272,3 +327,152 @@ class TranslationPipeline:
             request.error = str(exc)
             await session.commit()
             return request
+
+    async def apply_quality_gate(
+        self,
+        session: AsyncSession,
+        request: TranslationRequest,
+        completed_layers: list[TranslationLayerResult],
+        selected_model: str,
+        requested_mode: str,
+        effective_mode: str,
+        has_sacred_segment: bool,
+        on_progress: ProgressCallback | None = None,
+    ) -> TranslationRequest:
+        policy = get_translation_policy(effective_mode)
+        gate_required = policy.quality_gate_required or has_sacred_segment
+        if not gate_required:
+            return request
+
+        final_layer = max(completed_layers, key=lambda layer: layer.position, default=None)
+        if final_layer is None or not request.final_translation:
+            return request
+
+        gate_result = await self.run_quality_gate(
+            source_text=request.source_text,
+            final_translation=request.final_translation,
+            direction=request.direction,
+            requested_mode=requested_mode,
+            effective_mode=effective_mode,
+            has_sacred_segment=has_sacred_segment,
+            model=selected_model,
+        )
+
+        if gate_result.severity == QUALITY_CRITICAL:
+            retry_output = await self.openrouter.complete(
+                system_prompt=f"{build_system_prompt(effective_mode, has_sacred_segment)}\n\n{LAYER_DEFINITIONS[-1].system_prompt}",
+                user_prompt=self.build_quality_retry_prompt(
+                    request=request,
+                    completed_layers=completed_layers[:-1],
+                    previous_final_output=final_layer.output_text or "",
+                    quality_feedback=gate_result.feedback,
+                    requested_mode=requested_mode,
+                    effective_mode=effective_mode,
+                    has_sacred_segment=has_sacred_segment,
+                ),
+                model=selected_model,
+            )
+            final_layer.output_text = retry_output
+            request.final_translation = extract_final_translation(retry_output)
+            await session.commit()
+            await session.refresh(request)
+
+            second_gate_result = await self.run_quality_gate(
+                source_text=request.source_text,
+                final_translation=request.final_translation or "",
+                direction=request.direction,
+                requested_mode=requested_mode,
+                effective_mode=effective_mode,
+                has_sacred_segment=has_sacred_segment,
+                model=selected_model,
+            )
+            if second_gate_result.severity == QUALITY_CRITICAL:
+                request.status = QUALITY_FAILED_STATUS
+                request.error = second_gate_result.feedback or "quality_gate critical semantic drift"
+                await session.commit()
+                if on_progress:
+                    await on_progress(request, completed_layers)
+                return request
+
+            if second_gate_result.severity == QUALITY_WARNING:
+                final_layer.output_text = self.append_quality_warning(final_layer.output_text or "", second_gate_result.feedback)
+                await session.commit()
+            return request
+
+        if gate_result.severity == QUALITY_WARNING:
+            final_layer.output_text = self.append_quality_warning(final_layer.output_text or "", gate_result.feedback)
+            await session.commit()
+
+        return request
+
+    async def run_quality_gate(
+        self,
+        source_text: str,
+        final_translation: str,
+        direction: str,
+        requested_mode: str,
+        effective_mode: str,
+        has_sacred_segment: bool,
+        model: str,
+    ) -> QualityGateResult:
+        policy = get_translation_policy(effective_mode)
+        checklist = "\n".join(f"- {item}" for item in policy.review_checklist)
+        forbidden = "\n".join(f"- {item}" for item in policy.forbidden_transformations)
+        prompt = (
+            "راجع أمانة المعنى فقط وفق Translation Policy Engine.\n"
+            "أرجع severity واحدة فقط: pass أو warning أو critical.\n"
+            "critical يعني semantic drift واضح لا يجوز إرساله في sacred/legal.\n"
+            "warning يعني ملاحظة مفيدة لكن الترجمة قابلة للإرسال.\n\n"
+            f"اتجاه الترجمة: {direction_label(direction)}\n"
+            f"mode requested: {requested_mode}\n"
+            f"mode effective: {effective_mode}\n"
+            f"has_sacred_segment: {has_sacred_segment}\n\n"
+            f"Forbidden transformations:\n{forbidden}\n\n"
+            f"Review checklist:\n{checklist}\n\n"
+            f"النص الأصلي:\n{source_text}\n\n"
+            f"الترجمة النهائية:\n{final_translation}\n\n"
+            "اكتب بهذا الشكل فقط:\n"
+            "severity: pass|warning|critical\n"
+            "FEEDBACK:\n"
+            "[ملاحظة مختصرة ومكتملة، أو لا يوجد]"
+        )
+        output = await self.openrouter.complete(
+            system_prompt="أنت quality_gate صارم لفحص أمانة المعنى بين العربية والتركية.",
+            user_prompt=prompt,
+            model=model,
+        )
+        return parse_quality_gate_output(output)
+
+    def build_quality_retry_prompt(
+        self,
+        request: TranslationRequest,
+        completed_layers: list[TranslationLayerResult],
+        previous_final_output: str,
+        quality_feedback: str,
+        requested_mode: str,
+        effective_mode: str,
+        has_sacred_segment: bool,
+    ) -> str:
+        previous = "\n\n".join(
+            f"## {layer.position}. {layer.name}\n{layer.output_text or layer.error or ''}" for layer in completed_layers
+        )
+        return (
+            f"اتجاه الترجمة: {direction_label(request.direction)}\n"
+            f"وضع الترجمة الذي اختاره المستخدم: {mode_label(requested_mode)} ({requested_mode})\n"
+            f"وضع الترجمة المستخدم: {mode_label(effective_mode)} ({effective_mode})\n"
+            f"هل يوجد جزء ديني/شرعي حساس داخل النص: {'نعم' if has_sacred_segment else 'لا'}\n\n"
+            f"النص الأصلي:\n{request.source_text}\n\n"
+            f"تحليلات/نتائج الطبقات السابقة:\n{previous}\n\n"
+            f"مخرج الحكم النهائي السابق:\n{previous_final_output}\n\n"
+            f"ملاحظات quality_gate التي يجب تصحيحها:\n{quality_feedback}\n\n"
+            "أعد إصدار الحكم النهائي فقط، ولا تضف أي تفسير داخل FINAL_TRANSLATION."
+        )
+
+    def append_quality_warning(self, final_output: str, feedback: str) -> str:
+        warning = (feedback or "").strip()
+        if not is_complete_warning(warning):
+            return final_output
+        existing = extract_warnings(final_output)
+        if existing:
+            return final_output
+        return f"{final_output.rstrip()}\n\nWARNINGS:\n{warning}"

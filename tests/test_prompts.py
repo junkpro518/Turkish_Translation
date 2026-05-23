@@ -1,43 +1,60 @@
-from app.prompts.translation_prompts import SACRED_SYSTEM_PROMPT
+from app.prompts.translation_prompts import build_system_prompt
+from app.services.translation_policy import COMIC_POLICY, LEGAL_POLICY, SACRED_POLICY
 
 
-def test_sacred_prompt_rejects_religious_abbreviations() -> None:
-    assert "لا تختصر" in SACRED_SYSTEM_PROMPT
-    assert "s.a.v." in SACRED_SYSTEM_PROMPT
-    assert "r.a." in SACRED_SYSTEM_PROMPT
-    assert "cc" in SACRED_SYSTEM_PROMPT
-    assert "rh.a." in SACRED_SYSTEM_PROMPT
-    assert "عز وجل = azze ve celle" in SACRED_SYSTEM_PROMPT
-    assert "سبحانه وتعالى = sübhânehu ve teâlâ" in SACRED_SYSTEM_PROMPT
-    assert "صلى الله عليه وسلم = sallallahu aleyhi ve sellem" in SACRED_SYSTEM_PROMPT
-    assert "رضي الله عنه = radıyallahu anh" in SACRED_SYSTEM_PROMPT
-    assert "رضي الله عنهما = radıyallahu anhüma" in SACRED_SYSTEM_PROMPT
-    assert "رحمه الله = rahimehullah" in SACRED_SYSTEM_PROMPT
+def test_sacred_policy_contains_general_fidelity_rules() -> None:
+    prompt = SACRED_POLICY.to_prompt()
+
+    assert SACRED_POLICY.mode == "sacred"
+    assert not SACRED_POLICY.allow_paraphrase
+    assert SACRED_POLICY.preserve_sentence_type
+    assert SACRED_POLICY.preserve_negation
+    assert SACRED_POLICY.preserve_conditionals
+    assert SACRED_POLICY.preserve_exceptions
+    assert SACRED_POLICY.preserve_certainty_level
+    assert SACRED_POLICY.quality_gate_required
+    assert "إعادة الصياغة الحرة" in prompt
+    assert "تحويل السؤال إلى تقرير" in prompt
+    assert "تحويل اليقين إلى احتمال" in prompt
+    assert "s.a.v." in prompt
+    assert "r.a." in prompt
+    assert "cc" in prompt
+    assert "rh.a." in prompt
+    assert "salih amel" in prompt
+    assert "Allah yolunda cihad" in prompt
+    assert "ek not" in prompt
 
 
-def test_sacred_prompt_separates_external_notes_from_religious_text() -> None:
-    assert "EK NOT" in SACRED_SYSTEM_PROMPT
-    assert "FINAL_TRANSLATION يجب أن يحتوي على ترجمة النص الأصلي فقط" in SACRED_SYSTEM_PROMPT
-    assert "Bu açıklama metnin aslından değil, ek bir nottur" in SACRED_SYSTEM_PROMPT
-    assert "لا تحذف هذا التعليق" in SACRED_SYSTEM_PROMPT
-    assert "إذا لم يوجد تعليق أو فائدة إضافية من المستخدم، لا تضف قسم EK NOT نهائيًا" in SACRED_SYSTEM_PROMPT
-    assert "EK NOT يحتوي على ترجمة تعليق المستخدم أو الفائدة الإضافية فقط" in SACRED_SYSTEM_PROMPT
-    assert "sacred_source_text" in SACRED_SYSTEM_PROMPT
-    assert "user_extra_note" in SACRED_SYSTEM_PROMPT
+def test_comic_policy_is_dialogue_oriented_without_sacred_by_default() -> None:
+    prompt = COMIC_POLICY.to_prompt()
+
+    assert COMIC_POLICY.mode == "comic"
+    assert COMIC_POLICY.allow_paraphrase
+    assert "حوار طبيعي" in prompt
+    assert "فقاعة الكلام" in prompt
+    assert "شرح النكتة" in prompt
+    assert "معاملة جزء ديني حساس" in prompt
+    assert not COMIC_POLICY.quality_gate_required
 
 
-def test_sacred_prompt_allows_preserving_prophet_symbol_and_better_exception_wording() -> None:
-    assert "يجوز تركه كما هو" in SACRED_SYSTEM_PROMPT
-    assert "ﷺ = ﷺ" in SACRED_SYSTEM_PROMPT
-    assert "dönmeyene kadar hariç" in SACRED_SYSTEM_PROMPT
-    assert "Ancak bir kimse canıyla ve malıyla çıkıp da bunlardan hiçbir şeyle geri dönmezse, o müstesnadır." in SACRED_SYSTEM_PROMPT
+def test_legal_policy_requires_quality_gate_and_preserves_obligations() -> None:
+    prompt = LEGAL_POLICY.to_prompt()
+
+    assert LEGAL_POLICY.mode == "legal"
+    assert not LEGAL_POLICY.allow_paraphrase
+    assert LEGAL_POLICY.quality_gate_required
+    assert "تغيير قوة الالتزام القانوني" in prompt
+    assert "حذف شرط أو قيد أو استثناء" in prompt
 
 
-def test_sacred_prompt_prefers_accuracy_and_contemporary_religious_turkish() -> None:
-    assert "إذا كانت الترجمة الطبيعية قد تُضعف الدقة في النصوص الشرعية، فاختر الدقة" in SACRED_SYSTEM_PROMPT
-    assert "لا تستخدم لغة عثمانية قديمة أو ثقيلة" in SACRED_SYSTEM_PROMPT
-    assert "amel-i salih" in SACRED_SYSTEM_PROMPT
-    assert "cihad-ı fîsebilillah" in SACRED_SYSTEM_PROMPT
-    assert "ziyade notu" in SACRED_SYSTEM_PROMPT
-    assert "salih amel, Allah yolunda cihad, ek not" in SACRED_SYSTEM_PROMPT
-    assert "استخدم تركية دينية معاصرة ومفهومة" in SACRED_SYSTEM_PROMPT
+def test_build_system_prompt_adds_only_selected_policy_unless_sacred_guard_needed() -> None:
+    comic_prompt = build_system_prompt("comic")
+    guarded_comic_prompt = build_system_prompt("comic", has_sacred_segment=True)
+    sacred_prompt = build_system_prompt("sacred")
+
+    assert "mode: comic" in comic_prompt
+    assert "mode: sacred" not in comic_prompt
+    assert "Sacred segment guard" in guarded_comic_prompt
+    assert "mode: comic" in guarded_comic_prompt
+    assert "mode: sacred" in guarded_comic_prompt
+    assert "mode: sacred" in sacred_prompt

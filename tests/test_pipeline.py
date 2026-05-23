@@ -3,14 +3,19 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.config import Settings
 from app.database import Base
 from app.services.pipeline import (
+    QUALITY_CRITICAL,
+    QUALITY_FAILED_STATUS,
+    QUALITY_PASS,
+    QUALITY_WARNING,
     TranslationPipeline,
     extract_ek_not,
     extract_final_translation,
     extract_warnings,
     is_complete_warning,
+    parse_quality_gate_output,
     split_sacred_text,
 )
-from app.services.translations import create_translation_request
+from app.services.translations import count_failed_translation_data, create_translation_request, delete_failed_translation_data
 
 
 class FakeOpenRouterClient:
@@ -69,6 +74,17 @@ def test_extract_warnings_hides_incomplete_warning() -> None:
     assert is_complete_warning("Ek not metnin aslından değildir.")
 
 
+def test_parse_quality_gate_output_reads_severity_and_feedback() -> None:
+    warning = parse_quality_gate_output("severity: warning\nFEEDBACK:\nEk not metnin aslından değildir.")
+    critical = parse_quality_gate_output("severity: critical\nFEEDBACK:\nSoru rapora dönüştü.")
+    passed = parse_quality_gate_output("severity: pass\nFEEDBACK:\nلا يوجد")
+
+    assert warning.severity == QUALITY_WARNING
+    assert warning.feedback == "Ek not metnin aslından değildir."
+    assert critical.severity == QUALITY_CRITICAL
+    assert passed.severity == QUALITY_PASS
+
+
 def test_split_sacred_text_moves_extra_note_outside_hadith() -> None:
     text = (
         "1/1249- عن ابن عباس رضي الله عنهما، قال: قال رسول الله ﷺ: ما من أيام العمل الصالح فيها أحب إلى الله من هذه الأيام رواه البخاري.\n\n"
@@ -79,6 +95,15 @@ def test_split_sacred_text_moves_extra_note_outside_hadith() -> None:
 
     assert "رواه البخاري" in sacred_source_text
     assert user_extra_note == "حتى انها افضل من العشر الاواخر من رمضان"
+
+
+def test_split_sacred_text_uses_explicit_note_marker() -> None:
+    text = "قال رسول الله ﷺ: إنما الأعمال بالنيات.\nملاحظة: هذا للتذكير فقط."
+
+    sacred_source_text, user_extra_note = split_sacred_text(text)
+
+    assert "إنما الأعمال بالنيات" in sacred_source_text
+    assert user_extra_note == "هذا للتذكير فقط."
 
 
 async def test_pipeline_persists_all_layers_and_final_translation() -> None:
@@ -144,8 +169,8 @@ async def test_pipeline_adds_selected_comic_prompt_only_when_comic_mode() -> Non
         result = await pipeline.run(session, request, translation_mode="comic")
 
         assert result.status == "completed"
-        assert any("مترجم كوميكس ومانجا" in prompt for prompt in fake_client.system_prompts)
-        assert not any("مترجم قانوني محترف" in prompt for prompt in fake_client.system_prompts)
+        assert any("mode: comic" in prompt for prompt in fake_client.system_prompts)
+        assert not any("mode: legal" in prompt for prompt in fake_client.system_prompts)
 
     await engine.dispose()
 
@@ -185,8 +210,9 @@ async def test_pipeline_adds_sacred_guard_when_classifier_finds_sacred_segment()
         result = await pipeline.run(session, request)
 
         assert result.status == "completed"
-        assert "مترجم كوميكس ومانجا" in fake_client.system_prompts[1]
-        assert "مترجم دقيق للنصوص الإسلامية" in fake_client.system_prompts[1]
+        assert "mode: comic" in fake_client.system_prompts[1]
+        assert "Sacred segment guard" in fake_client.system_prompts[1]
+        assert "mode: sacred" in fake_client.system_prompts[1]
 
     await engine.dispose()
 
@@ -229,5 +255,121 @@ async def test_translation_request_accepts_large_telegram_ids() -> None:
 
         assert request.telegram_user_id == large_id
         assert request.telegram_chat_id == large_id
+
+    await engine.dispose()
+
+
+async def test_quality_gate_marks_sacred_request_failed_after_retry_stays_critical() -> None:
+    class CriticalQualityClient(FakeOpenRouterClient):
+        async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+            self.calls += 1
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if self.calls == 1:
+                return (
+                    "detected_mode: sacred\n"
+                    "recommended_mode: sacred\n"
+                    "has_sacred_segment: true\n"
+                    "freedom_level: low\n"
+                    "allow_paraphrase: false\n"
+                    "sensitive_terms: حديث\n"
+                    "warnings: لا يوجد"
+                )
+            if self.calls == 8:
+                return "FINAL_TRANSLATION:\nYanlış anlam.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد"
+            if self.calls in {9, 11}:
+                return "severity: critical\nFEEDBACK:\nSoru rapora dönüştü."
+            if self.calls == 10:
+                return "FINAL_TRANSLATION:\nHâlâ yanlış.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد"
+            return f"Layer {self.calls} analysis"
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=CriticalQualityClient())
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "قال النبي ﷺ...", 1, 2)
+        result = await pipeline.run(session, request, translation_mode="sacred")
+
+        assert result.status == QUALITY_FAILED_STATUS
+        assert "Soru rapora dönüştü" in (result.error or "")
+
+    await engine.dispose()
+
+
+async def test_quality_gate_warning_keeps_translation_and_appends_warning() -> None:
+    class WarningQualityClient(FakeOpenRouterClient):
+        async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+            self.calls += 1
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if self.calls == 1:
+                return (
+                    "detected_mode: legal\n"
+                    "recommended_mode: legal\n"
+                    "has_sacred_segment: false\n"
+                    "freedom_level: low\n"
+                    "allow_paraphrase: false\n"
+                    "sensitive_terms: عقد\n"
+                    "warnings: لا يوجد"
+                )
+            if self.calls == 8:
+                return "FINAL_TRANSLATION:\nSözleşme metni.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد"
+            if self.calls == 9:
+                return "severity: warning\nFEEDBACK:\nBir terim ayrıca kontrol edilmelidir."
+            return f"Layer {self.calls} analysis"
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=WarningQualityClient())
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", "نص عقد", 1, 2)
+        result = await pipeline.run(session, request, translation_mode="legal")
+        await session.refresh(result, ["layers"])
+        final_layer = max(result.layers, key=lambda layer: layer.position)
+
+        assert result.status == "completed"
+        assert "Bir terim ayrıca kontrol edilmelidir." in (final_layer.output_text or "")
+
+    await engine.dispose()
+
+
+async def test_failed_cleanup_counts_and_deletes_only_failed_requests() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        failed = await create_translation_request(session, "ar_to_tr", "فشل", 1, 2)
+        quality_failed = await create_translation_request(session, "ar_to_tr", "فشل جودة", 1, 2)
+        completed = await create_translation_request(session, "ar_to_tr", "نجح", 1, 2)
+        failed.status = "failed"
+        quality_failed.status = QUALITY_FAILED_STATUS
+        completed.status = "completed"
+        session.add_all([failed, quality_failed, completed])
+        await session.commit()
+
+        request_count, layer_count = await count_failed_translation_data(session)
+        deleted_requests, deleted_layers = await delete_failed_translation_data(session)
+        remaining_count, _ = await count_failed_translation_data(session)
+
+        assert request_count == 2
+        assert layer_count == 0
+        assert deleted_requests == 2
+        assert deleted_layers == 0
+        assert remaining_count == 0
+        assert completed.id is not None
 
     await engine.dispose()
