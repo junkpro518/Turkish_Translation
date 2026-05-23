@@ -1,6 +1,13 @@
 from types import SimpleNamespace
 
-from app.bot.telegram_bot import BTN_CLEAR_FAILED, build_telegram_result_text, is_telegram_admin, main_keyboard, render_progress_text
+from app.bot.telegram_bot import (
+    BTN_CLEAR_FAILED,
+    build_failure_text,
+    build_telegram_result_text,
+    is_telegram_admin,
+    main_keyboard,
+    render_progress_text,
+)
 from app.config import Settings
 from app.models.translation import TranslationLayerResult
 
@@ -46,6 +53,28 @@ def test_telegram_result_hides_incomplete_warnings() -> None:
     assert "Hadis metni." in text
     assert "WARNINGS:" not in text
     assert "Kesinlikle" not in text
+
+
+def test_quality_failed_failure_text_is_concise() -> None:
+    request = SimpleNamespace(
+        status="quality_failed",
+        error="QUALITY CHECK FAILED: semantic drift in sacred text with a very long internal explanation",
+    )
+
+    text = build_failure_text(request)
+
+    assert "فحص الجودة" in text
+    assert "راجع الموقع" in text
+    assert "QUALITY CHECK FAILED" not in text
+
+
+def test_general_failure_text_keeps_short_reason() -> None:
+    request = SimpleNamespace(status="failed", error="OpenRouter error")
+
+    text = build_failure_text(request)
+
+    assert "تعذرت الترجمة" in text
+    assert "OpenRouter error" in text
 
 
 def test_telegram_admin_ids_control_cleanup_button_visibility() -> None:

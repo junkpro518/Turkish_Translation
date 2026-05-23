@@ -657,16 +657,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await safe_edit_text(status_message, "اكتملت الترجمة. النتيجة:")
         await send_copyable_translation(update, context, build_telegram_result_text(request.final_translation, final_layer_output))
     elif request.status == "quality_failed":
-        failure_text = "تعذّر إرسال الترجمة لأن مراجعة الجودة وجدت احتمال تغيّر واضح في المعنى. تم حفظ الطلب للمراجعة."
-        if status_message is not None:
-            await safe_edit_text(status_message, failure_text)
-        else:
+        failure_text = build_failure_text(request)
+        if status_message is None or not await safe_edit_text(status_message, failure_text):
             await safe_send_text(context, update.effective_chat.id if update.effective_chat else None, failure_text)
     else:
-        failure_text = f"تعذرت الترجمة. السبب: {request.error or 'خطأ غير معروف'}"
-        if status_message is not None:
-            await safe_edit_text(status_message, failure_text)
-        else:
+        failure_text = build_failure_text(request)
+        if status_message is None or not await safe_edit_text(status_message, failure_text):
             await safe_send_text(context, update.effective_chat.id if update.effective_chat else None, failure_text)
 
 
@@ -694,6 +690,20 @@ def build_telegram_result_text(final_translation: str, final_layer_output: str) 
         parts.append(f"WARNINGS:\n{warnings}")
 
     return "\n\n".join(part for part in parts if part.strip())
+
+
+def build_failure_text(request: TranslationRequest) -> str:
+    if request.status == "quality_failed":
+        return (
+            "لم أرسل الترجمة لأن فحص الجودة رفض النتيجة.\n"
+            "السبب المختصر: الترجمة قد تغيّر معنى النص، خصوصًا في نص حساس.\n"
+            "راجع الموقع للاطلاع على التفاصيل."
+        )
+
+    reason = (request.error or "خطأ غير معروف").strip()
+    if len(reason) > 600:
+        reason = f"{reason[:600].rstrip()}..."
+    return f"تعذرت الترجمة. السبب: {reason}"
 
 
 def build_application(settings: Settings, session_factory: async_sessionmaker) -> Application:
