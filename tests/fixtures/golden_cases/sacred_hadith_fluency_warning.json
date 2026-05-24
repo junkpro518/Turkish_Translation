@@ -1,0 +1,9 @@
+{
+  "source_text": "حديث ابن عباس عن فضل عشر ذي الحجة.",
+  "mode": "sacred",
+  "classifier_output": "detected_mode: sacred\nrecommended_mode: sacred\nhas_sacred_segment: true\nfreedom_level: low\nallow_paraphrase: false\nsensitive_terms: حديث ابن عباس\nwarnings: لا يوجد",
+  "final_output": "FINAL_TRANSLATION:\nAllah katında bu günlerde yapılan salih amellerden daha sevimli hiçbir amel yoktur.\n\nBRIEF_REASON:\nتم الحفاظ على البنية الشرعية للنص.\n\nWARNINGS:\nلا يوجد",
+  "quality_gate_output": "{\"issue_type\":\"fluency_issue\",\"severity\":\"critical\",\"feedback\":\"Türkçe cümle akışı doğal değildir.\"}",
+  "expected_status": "completed",
+  "expected_warning_contains": "Türkçe cümle akışı doğal değildir."
+}

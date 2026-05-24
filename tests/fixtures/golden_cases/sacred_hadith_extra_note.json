@@ -1,0 +1,9 @@
+{
+  "source_text": "1/1249- عن ابن عباس رضي الله عنهما، قال: قال رسول الله ﷺ: ما من أيام العمل الصالح فيها أحب إلى الله من هذه الأيام يعني: أيام العشر، قالوا: يا رسول الله ولا الجهاد في سبيل الله؟ قال: ولا الجهاد في سبيل الله، إلا رجل خرج بنفسه وماله فلم يرجع من ذلك بشيء رواه البخاري.\n\nحتى انها افضل من العشر الاواخر من رمضان",
+  "mode": "sacred",
+  "classifier_output": "detected_mode: sacred\nrecommended_mode: sacred\nhas_sacred_segment: true\nfreedom_level: low\nallow_paraphrase: false\nsensitive_terms: حديث\nwarnings: يحتوي على متن حديث وتعليق خارجي",
+  "final_output": "FINAL_TRANSLATION:\nİbn Abbas radıyallahu anhüma'dan rivayet edildiğine göre, Allah'ın Resûlü ﷺ şöyle buyurdu: Allah katında içinde salih amelin bu günlerden, yani Zilhicce'nin ilk on gününden, daha sevimli olduğu hiçbir gün yoktur. Sahâbîler: Ey Allah'ın Resûlü, Allah yolunda cihad da mı? dediler. O da: Allah yolunda cihad da. Ancak bir kimse canıyla ve malıyla çıkıp da bunlardan hiçbir şeyle geri dönmezse, o müstesnadır. Buhârî rivayet etmiştir.\n\nEK NOT:\nBu açıklama metnin aslından değil, ek bir nottur: Bu günlerin, Ramazan'ın son on gününden daha faziletli olduğu belirtilmiştir.\n\nBRIEF_REASON:\nHadis metni ile kullanıcı notu ayrı tutuldu.\n\nWARNINGS:\nEk not metnin aslından değildir.",
+  "quality_gate_output": "{\"issue_type\":\"fluency_issue\",\"severity\":\"pass\",\"feedback\":\"لا يوجد\"}",
+  "expected_status": "completed",
+  "expected_warning_contains": "Bu açıklama metnin aslından değil"
+}

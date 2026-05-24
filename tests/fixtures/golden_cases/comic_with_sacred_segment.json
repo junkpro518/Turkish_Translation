@@ -1,0 +1,9 @@
+{
+  "source_text": "قال البطل: لا تخف! ثم قرأ دعاء قصيرا.",
+  "mode": "comic",
+  "classifier_output": "detected_mode: comic\nrecommended_mode: comic\nhas_sacred_segment: true\nfreedom_level: medium\nallow_paraphrase: true\nsensitive_terms: دعاء\nwarnings: يحتوي جزءا دينيا حساسا",
+  "final_output": "FINAL_TRANSLATION:\nKahraman, \"Korkma!\" dedi. Sonra kısa bir dua okudu.\n\nBRIEF_REASON:\nتم الحفاظ على طبيعة الحوار مع حماية الجزء الديني.\n\nWARNINGS:\nلا يوجد",
+  "quality_gate_output": "{\"issue_type\":\"fluency_issue\",\"severity\":\"pass\",\"feedback\":\"لا يوجد\"}",
+  "expected_status": "completed",
+  "expected_warning_contains": "Korkma"
+}

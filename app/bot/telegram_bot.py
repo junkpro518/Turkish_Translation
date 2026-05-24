@@ -9,6 +9,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
 from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
+from app.bot.rendering import build_failure_text, build_telegram_result_text
 from app.config import Settings
 from app.models.translation import TranslationLayerResult, TranslationRequest
 from app.services.layers import (
@@ -22,7 +23,7 @@ from app.services.layers import (
     TRANSLATION_MODE_SACRED,
     mode_label,
 )
-from app.services.pipeline import TranslationPipeline, extract_ek_not, extract_warnings
+from app.services.pipeline import TranslationPipeline
 from app.services.translations import count_failed_translation_data, create_translation_request, delete_failed_translation_data
 from app.utils import chunk_text
 
@@ -679,33 +680,6 @@ async def send_copyable_translation(update: Update, context: ContextTypes.DEFAUL
         )
         if not sent:
             await safe_send_text(context, chat_id, chunk)
-
-
-def build_telegram_result_text(final_translation: str, final_layer_output: str) -> str:
-    parts = [final_translation.strip()]
-    ek_not = extract_ek_not(final_layer_output)
-    warnings = extract_warnings(final_layer_output)
-
-    if ek_not:
-        parts.append(f"EK NOT:\n{ek_not}")
-    if warnings:
-        parts.append(f"WARNINGS:\n{warnings}")
-
-    return "\n\n".join(part for part in parts if part.strip())
-
-
-def build_failure_text(request: TranslationRequest) -> str:
-    if request.status == "quality_failed":
-        return (
-            "لم أرسل الترجمة لأن فحص الجودة رفض النتيجة.\n"
-            "السبب المختصر: الترجمة قد تغيّر معنى النص، خصوصًا في نص حساس.\n"
-            "راجع الموقع للاطلاع على التفاصيل."
-        )
-
-    reason = (request.error or "خطأ غير معروف").strip()
-    if len(reason) > 600:
-        reason = f"{reason[:600].rstrip()}..."
-    return f"تعذرت الترجمة. السبب: {reason}"
 
 
 def build_application(settings: Settings, session_factory: async_sessionmaker) -> Application:

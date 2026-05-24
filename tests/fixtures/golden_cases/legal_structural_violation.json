@@ -1,0 +1,9 @@
+{
+  "source_text": "هل يلتزم الطرف الثاني بدفع كامل المبلغ خلال عشرة أيام؟",
+  "mode": "legal",
+  "classifier_output": "detected_mode: legal\nrecommended_mode: legal\nhas_sacred_segment: false\nfreedom_level: low\nallow_paraphrase: false\nsensitive_terms: التزام قانوني\nwarnings: لا يوجد",
+  "final_output": "FINAL_TRANSLATION:\nİkinci taraf, tutarın tamamını on gün içinde öder.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد",
+  "quality_gate_output": "{\"issue_type\":\"structural_violation\",\"severity\":\"critical\",\"feedback\":\"Soru rapora dönüştü.\"}",
+  "expected_status": "quality_failed",
+  "expected_warning_contains": "Soru rapora dönüştü."
+}

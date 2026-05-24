@@ -1,6 +1,5 @@
 import re
 import time
-from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +19,21 @@ from app.services.layers import (
     normalize_translation_mode,
 )
 from app.services.openrouter import OpenRouterClient
+from app.services.quality_gate import (
+    QUALITY_CRITICAL,
+    QUALITY_FAILED_STATUS,
+    QUALITY_ISSUE_FLUENCY,
+    QUALITY_ISSUE_INTERPRETIVE_EXPANSION,
+    QUALITY_ISSUE_LANGUAGE_CONTAMINATION,
+    QUALITY_ISSUE_REGISTER,
+    QUALITY_ISSUE_SEMANTIC_DRIFT,
+    QUALITY_ISSUE_STRUCTURAL,
+    QUALITY_ISSUE_TYPES,
+    QUALITY_PASS,
+    QUALITY_WARNING,
+    QualityGateResult,
+    parse_quality_gate_output,
+)
 from app.services.translation_policy import get_translation_policy
 
 ProgressCallback = Callable[[TranslationRequest, list[TranslationLayerResult]], Awaitable[None]]
@@ -54,59 +68,6 @@ INCOMPLETE_WARNING_ENDINGS = (
     "fakat",
     "ama",
 )
-QUALITY_PASS = "pass"
-QUALITY_WARNING = "warning"
-QUALITY_CRITICAL = "critical"
-QUALITY_FAILED_STATUS = "quality_failed"
-QUALITY_ISSUE_SEMANTIC_DRIFT = "semantic_drift"
-QUALITY_ISSUE_INTERPRETIVE_EXPANSION = "interpretive_expansion"
-QUALITY_ISSUE_REGISTER = "register_issue"
-QUALITY_ISSUE_FLUENCY = "fluency_issue"
-QUALITY_ISSUE_LANGUAGE_CONTAMINATION = "language_contamination"
-QUALITY_ISSUE_STRUCTURAL = "structural_violation"
-QUALITY_ISSUE_TYPES = {
-    QUALITY_ISSUE_SEMANTIC_DRIFT,
-    QUALITY_ISSUE_INTERPRETIVE_EXPANSION,
-    QUALITY_ISSUE_REGISTER,
-    QUALITY_ISSUE_FLUENCY,
-    QUALITY_ISSUE_LANGUAGE_CONTAMINATION,
-    QUALITY_ISSUE_STRUCTURAL,
-}
-QUALITY_WARNING_ONLY_ISSUES = {
-    QUALITY_ISSUE_INTERPRETIVE_EXPANSION,
-    QUALITY_ISSUE_REGISTER,
-    QUALITY_ISSUE_FLUENCY,
-}
-QUALITY_CRITICAL_ISSUES = {
-    QUALITY_ISSUE_SEMANTIC_DRIFT,
-    QUALITY_ISSUE_LANGUAGE_CONTAMINATION,
-    QUALITY_ISSUE_STRUCTURAL,
-}
-GENERIC_QUALITY_FEEDBACK_PATTERN = re.compile(
-    r"(قد\s+تغي[ّير]+?\s+المعنى|might\s+change\s+the\s+meaning|may\s+change\s+the\s+meaning|"
-    r"meaning\s+may\s+be\s+changed|anlam\s+değişebilir|anlamı\s+değişebilir)",
-    re.IGNORECASE,
-)
-CONCRETE_CRITICAL_FEEDBACK_PATTERN = re.compile(
-    r"(language\s+contamination|chinese|中文|صيني|لغة\s+غير\s+متوقعة|"
-    r"حذف|محذوف|omitted|missing\s+(?:meaning|condition|exception)|"
-    r"قلب\s+النفي|تحويل\s+النفي|النفي\s+إلى\s+إثبات|negation|"
-    r"تحويل\s+السؤال|سؤال.*تقرير|soru.*rapor|question.*statement|"
-    r"دمج.*(?:ek\s*not|تعليق)|(?:ek\s*not|تعليق).*دمج|merged.*(?:ek\s*not|note)|"
-    r"حذف.*(?:تعليق|فائدة)|(?:external\s+note|user\s+note).*omitted|"
-    r"تغيير\s+(?:الحكم|المعنى\s+الأساسي)|semantic\s+drift\s+واضح|clear\s+semantic\s+drift|anlam\s+değişmiştir)",
-    re.IGNORECASE,
-)
-
-
-@dataclass(frozen=True)
-class QualityGateResult:
-    severity: str
-    feedback: str = ""
-    corrected_translation: str = ""
-    issue_type: str = ""
-
-
 def split_sacred_text(source_text: str) -> tuple[str, str]:
     text = source_text.strip()
     marker_match = EXTRA_NOTE_MARKER_PATTERN.search(text)
@@ -253,66 +214,6 @@ def detect_mode_from_policy_output(text: str) -> str | None:
 
 def detect_sacred_segment_from_policy_output(text: str) -> bool:
     return bool(SACRED_PATTERN.search(text or ""))
-
-
-def extract_quality_feedback(text: str) -> str:
-    match = re.search(r"FEEDBACK\s*[:=]\s*(.*)\Z", text or "", re.IGNORECASE | re.DOTALL)
-    if not match:
-        return ""
-    return match.group(1).strip(" \n\r\t:-")
-
-
-def is_generic_quality_feedback(feedback: str) -> bool:
-    return bool(GENERIC_QUALITY_FEEDBACK_PATTERN.search(feedback or ""))
-
-
-def has_concrete_critical_feedback(feedback: str) -> bool:
-    return bool(CONCRETE_CRITICAL_FEEDBACK_PATTERN.search(feedback or ""))
-
-
-def calibrate_quality_severity(severity: str, issue_type: str, feedback: str) -> str:
-    if issue_type in QUALITY_WARNING_ONLY_ISSUES and severity == QUALITY_CRITICAL:
-        return QUALITY_WARNING
-    if severity != QUALITY_CRITICAL:
-        if issue_type in QUALITY_CRITICAL_ISSUES and severity == QUALITY_PASS and has_concrete_critical_feedback(feedback):
-            return QUALITY_CRITICAL
-        return severity
-    if issue_type == QUALITY_ISSUE_LANGUAGE_CONTAMINATION:
-        return QUALITY_CRITICAL
-    if is_generic_quality_feedback(feedback):
-        return QUALITY_WARNING
-    if issue_type in {QUALITY_ISSUE_SEMANTIC_DRIFT, QUALITY_ISSUE_STRUCTURAL}:
-        return QUALITY_CRITICAL if has_concrete_critical_feedback(feedback) else QUALITY_WARNING
-    if not issue_type:
-        return QUALITY_CRITICAL if has_concrete_critical_feedback(feedback) else QUALITY_WARNING
-    return severity
-
-
-def parse_quality_gate_output(text: str) -> QualityGateResult:
-    severity_match = re.search(r"severity\s*[:=]\s*(pass|warning|critical)", text or "", re.IGNORECASE)
-    severity = severity_match.group(1).lower() if severity_match else QUALITY_PASS
-    if severity not in {QUALITY_PASS, QUALITY_WARNING, QUALITY_CRITICAL}:
-        severity = QUALITY_PASS
-    issue_type_match = re.search(
-        r"(?:issue_type|issue|category)\s*[:=]\s*"
-        r"(semantic_drift|interpretive_expansion|register_issue|fluency_issue|language_contamination|structural_violation)",
-        text or "",
-        re.IGNORECASE,
-    )
-    issue_type = issue_type_match.group(1).lower() if issue_type_match else ""
-    if issue_type not in QUALITY_ISSUE_TYPES:
-        issue_type = ""
-    feedback = extract_quality_feedback(text) or extract_section(text, "WARNINGS") or text.strip()
-    severity = calibrate_quality_severity(severity, issue_type, feedback)
-    corrected_translation = extract_final_translation(text)
-    if corrected_translation == text.strip() and not re.search(r"FINAL_TRANSLATION", text or ""):
-        corrected_translation = ""
-    return QualityGateResult(
-        severity=severity,
-        feedback=feedback,
-        corrected_translation=corrected_translation,
-        issue_type=issue_type,
-    )
 
 
 class TranslationPipeline:
@@ -535,14 +436,18 @@ class TranslationPipeline:
         forbidden = "\n".join(f"- {item}" for item in policy.forbidden_transformations)
         prompt = (
             "راجع أمانة المعنى فقط وفق Translation Policy Engine.\n"
-            "أرجع issue_type واحدة فقط من هذه القائمة:\n"
+            "أرجع JSON صالحًا فقط، بدون Markdown وبدون أي شرح خارج JSON.\n"
+            "الشكل المطلوب بالضبط:\n"
+            '{"issue_type":"semantic_drift","severity":"warning","feedback":"ملاحظة مختصرة ومكتملة"}'
+            "\n\n"
+            "issue_type يجب أن تكون واحدة فقط من هذه القائمة:\n"
             "- semantic_drift\n"
             "- interpretive_expansion\n"
             "- register_issue\n"
             "- fluency_issue\n"
             "- language_contamination\n"
             "- structural_violation\n\n"
-            "أرجع severity واحدة فقط: pass أو warning أو critical.\n\n"
+            "severity يجب أن تكون واحدة فقط: pass أو warning أو critical.\n\n"
             "Severity calibration:\n"
             "CRITICAL فقط عند: language_contamination، تغيير المعنى الأساسي، حذف قيد أو استثناء، تحويل النفي إلى إثبات، "
             "تحويل السؤال إلى تقرير، تغيير اليقين إلى احتمال أو العكس، دمج تعليق المستخدم داخل المتن الأصلي، "
@@ -552,7 +457,10 @@ class TranslationPipeline:
             "PASS عند اختلافات أسلوبية بسيطة لا تغيّر المعنى.\n"
             "لا ترفض الترجمة بالكامل إذا كانت المشكلة فقط fluency_issue أو register_issue أو interpretive_expansion بسيط.\n\n"
             "Do not mark as critical for fluency, register, or awkward Turkish unless the meaning is clearly changed.\n"
-            "إذا كان issue_type غير واضح أو كانت FEEDBACK عامة مثل: قد تغيّر المعنى، فاجعل severity=warning وليس critical.\n\n"
+            "إذا كان issue_type غير واضح أو كانت feedback عامة مثل: قد تغيّر المعنى، فاجعل severity=warning وليس critical.\n"
+            "إذا لم توجد مشكلة، استخدم: "
+            '{"issue_type":"fluency_issue","severity":"pass","feedback":"لا يوجد"}'
+            "\n\n"
             f"اتجاه الترجمة: {direction_label(direction)}\n"
             f"mode requested: {requested_mode}\n"
             f"mode effective: {effective_mode}\n"
@@ -561,15 +469,12 @@ class TranslationPipeline:
             f"Review checklist:\n{checklist}\n\n"
             f"النص الأصلي:\n{source_text}\n\n"
             f"الترجمة النهائية:\n{final_translation}\n\n"
-            "اكتب بهذا الشكل فقط:\n"
-            "issue_type: semantic_drift|interpretive_expansion|register_issue|fluency_issue|language_contamination|structural_violation\n"
-            "severity: pass|warning|critical\n"
-            "FEEDBACK:\n"
-            "[ملاحظة مختصرة ومكتملة، أو لا يوجد]"
+            "أرجع JSON فقط بهذه المفاتيح الثلاثة: issue_type, severity, feedback."
         )
         output = await self.openrouter.complete(
             system_prompt=(
                 "أنت quality_gate لفحص أمانة المعنى بين العربية والتركية. "
+                "أرجع JSON صالحًا فقط بالمفاتيح: issue_type, severity, feedback. "
                 "عاير severity بدقة: لا تجعل مشكلات الأسلوب أو التفسير الزائد البسيط critical. "
                 "Do not mark as critical for fluency, register, or awkward Turkish unless the meaning is clearly changed."
             ),

@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+
+import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
@@ -48,6 +52,34 @@ class FakeOpenRouterClient:
         return f"Layer {self.calls} analysis"
 
 
+class GoldenCaseOpenRouterClient(FakeOpenRouterClient):
+    def __init__(self, case: dict[str, str]):
+        super().__init__()
+        self.case = case
+
+    async def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+        self.calls += 1
+        self.models.append(model)
+        self.system_prompts.append(system_prompt)
+        self.user_prompts.append(user_prompt)
+        if self.calls == 1:
+            return self.case["classifier_output"]
+        if self.calls in {8, 10}:
+            return self.case["final_output"]
+        if self.calls in {9, 11}:
+            return self.case["quality_gate_output"]
+        return f"Layer {self.calls} analysis"
+
+
+GOLDEN_CASE_DIR = Path(__file__).parent / "fixtures" / "golden_cases"
+GOLDEN_CASE_FILES = (
+    GOLDEN_CASE_DIR / "sacred_hadith_extra_note.json",
+    GOLDEN_CASE_DIR / "sacred_hadith_fluency_warning.json",
+    GOLDEN_CASE_DIR / "comic_with_sacred_segment.json",
+    GOLDEN_CASE_DIR / "legal_structural_violation.json",
+)
+
+
 def test_extract_final_translation_with_reason() -> None:
     text = "FINAL_TRANSLATION:\nMerhaba dünya\n\nBRIEF_REASON:\nNatural Turkish."
     assert extract_final_translation(text) == "Merhaba dünya"
@@ -93,12 +125,12 @@ def test_extract_warnings_hides_incomplete_warning() -> None:
 
 def test_parse_quality_gate_output_reads_severity_and_feedback() -> None:
     warning = parse_quality_gate_output(
-        "issue_type: register_issue\nseverity: warning\nFEEDBACK:\nEk not metnin aslından değildir."
+        '{"issue_type":"register_issue","severity":"warning","feedback":"Ek not metnin aslından değildir."}'
     )
     critical = parse_quality_gate_output(
-        "issue_type: structural_violation\nseverity: critical\nFEEDBACK:\nSoru rapora dönüştü."
+        '{"issue_type":"structural_violation","severity":"critical","feedback":"Soru rapora dönüştü."}'
     )
-    passed = parse_quality_gate_output("severity: pass\nFEEDBACK:\nلا يوجد")
+    passed = parse_quality_gate_output('{"issue_type":"fluency_issue","severity":"pass","feedback":"لا يوجد"}')
 
     assert warning.severity == QUALITY_WARNING
     assert warning.feedback == "Ek not metnin aslından değildir."
@@ -106,12 +138,38 @@ def test_parse_quality_gate_output_reads_severity_and_feedback() -> None:
     assert passed.severity == QUALITY_PASS
 
 
+def test_parse_quality_gate_invalid_json_falls_back_to_warning() -> None:
+    result = parse_quality_gate_output("severity: critical\nFEEDBACK:\nSoru rapora dönüştü.")
+
+    assert result.severity == QUALITY_WARNING
+    assert "تعذر قراءة نتيجة فحص الجودة" in result.feedback
+
+
+def test_parse_quality_gate_missing_fields_falls_back_to_warning() -> None:
+    result = parse_quality_gate_output('{"severity":"critical","feedback":"Soru rapora dönüştü."}')
+
+    assert result.severity == QUALITY_WARNING
+    assert "تعذر قراءة نتيجة فحص الجودة" in result.feedback
+
+
+def test_parse_quality_gate_unknown_issue_type_falls_back_to_warning() -> None:
+    result = parse_quality_gate_output(
+        '{"issue_type":"unclear_problem","severity":"critical","feedback":"Soru rapora dönüştü."}'
+    )
+
+    assert result.severity == QUALITY_WARNING
+    assert "تعذر قراءة نتيجة فحص الجودة" in result.feedback
+
+
 def test_parse_quality_gate_downgrades_simple_interpretive_expansion_to_warning() -> None:
     result = parse_quality_gate_output(
-        "issue_type: interpretive_expansion\n"
-        "severity: critical\n"
-        "FEEDBACK:\n"
-        "Parantez içi açıklama FINAL_TRANSLATION içinde yer almamalıdır."
+        json.dumps(
+            {
+                "issue_type": "interpretive_expansion",
+                "severity": "critical",
+                "feedback": "Parantez içi açıklama FINAL_TRANSLATION içinde yer almamalıdır.",
+            }
+        )
     )
 
     assert result.issue_type == QUALITY_ISSUE_INTERPRETIVE_EXPANSION
@@ -120,21 +178,22 @@ def test_parse_quality_gate_downgrades_simple_interpretive_expansion_to_warning(
 
 def test_parse_quality_gate_downgrades_generic_critical_feedback_to_warning() -> None:
     result = parse_quality_gate_output(
-        "severity: critical\n"
-        "FEEDBACK:\n"
-        "قد تغيّر المعنى ويحتاج النص إلى مراجعة."
+        json.dumps(
+            {
+                "issue_type": "semantic_drift",
+                "severity": "critical",
+                "feedback": "قد تغيّر المعنى ويحتاج النص إلى مراجعة.",
+            }
+        )
     )
 
-    assert result.issue_type == ""
+    assert result.issue_type == "semantic_drift"
     assert result.severity == QUALITY_WARNING
 
 
 def test_parse_quality_gate_downgrades_semantic_drift_without_specific_evidence() -> None:
     result = parse_quality_gate_output(
-        "issue_type: semantic_drift\n"
-        "severity: critical\n"
-        "FEEDBACK:\n"
-        "قد تغيّر المعنى."
+        '{"issue_type":"semantic_drift","severity":"critical","feedback":"قد تغيّر المعنى."}'
     )
 
     assert result.severity == QUALITY_WARNING
@@ -142,10 +201,7 @@ def test_parse_quality_gate_downgrades_semantic_drift_without_specific_evidence(
 
 def test_parse_quality_gate_downgrades_fluency_critical_to_warning() -> None:
     result = parse_quality_gate_output(
-        "issue_type: fluency_issue\n"
-        "severity: critical\n"
-        "FEEDBACK:\n"
-        "Türkçe cümle akışı doğal değildir."
+        '{"issue_type":"fluency_issue","severity":"critical","feedback":"Türkçe cümle akışı doğal değildir."}'
     )
 
     assert result.issue_type == QUALITY_ISSUE_FLUENCY
@@ -358,7 +414,7 @@ async def test_quality_gate_marks_sacred_request_failed_after_retry_stays_critic
             if self.calls == 8:
                 return "FINAL_TRANSLATION:\nYanlış anlam.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد"
             if self.calls in {9, 11}:
-                return "severity: critical\nFEEDBACK:\nSoru rapora dönüştü."
+                return '{"issue_type":"structural_violation","severity":"critical","feedback":"Soru rapora dönüştü."}'
             if self.calls == 10:
                 return "FINAL_TRANSLATION:\nHâlâ yanlış.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد"
             return f"Layer {self.calls} analysis"
@@ -441,7 +497,7 @@ async def test_quality_gate_warning_keeps_translation_and_appends_warning() -> N
             if self.calls == 8:
                 return "FINAL_TRANSLATION:\nSözleşme metni.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد"
             if self.calls == 9:
-                return "severity: warning\nFEEDBACK:\nBir terim ayrıca kontrol edilmelidir."
+                return '{"issue_type":"register_issue","severity":"warning","feedback":"Bir terim ayrıca kontrol edilmelidir."}'
             return f"Layer {self.calls} analysis"
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -492,10 +548,8 @@ async def test_quality_gate_sacred_interpretive_expansion_warning_does_not_fail(
                 )
             if self.calls == 9:
                 return (
-                    "issue_type: interpretive_expansion\n"
-                    "severity: critical\n"
-                    "FEEDBACK:\n"
-                    "Parantez içi açıklama FINAL_TRANSLATION içinde yer almamalıdır."
+                    '{"issue_type":"interpretive_expansion","severity":"critical",'
+                    '"feedback":"Parantez içi açıklama FINAL_TRANSLATION içinde yer almamalıdır."}'
                 )
             return f"Layer {self.calls} analysis"
 
@@ -549,12 +603,7 @@ async def test_quality_gate_sacred_fluency_issue_warning_does_not_fail() -> None
                     "لا يوجد"
                 )
             if self.calls == 9:
-                return (
-                    "issue_type: fluency_issue\n"
-                    "severity: critical\n"
-                    "FEEDBACK:\n"
-                    "Türkçe cümle akışı doğal değildir."
-                )
+                return '{"issue_type":"fluency_issue","severity":"critical","feedback":"Türkçe cümle akışı doğal değildir."}'
             return f"Layer {self.calls} analysis"
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -599,7 +648,7 @@ async def test_quality_retry_missing_final_translation_marks_quality_failed() ->
             if self.calls == 8:
                 return "FINAL_TRANSLATION:\nYanlış anlam.\n\nBRIEF_REASON:\nKısa.\n\nWARNINGS:\nلا يوجد"
             if self.calls == 9:
-                return "issue_type: semantic_drift\nseverity: critical\nFEEDBACK:\nAnlam değişmiştir."
+                return '{"issue_type":"semantic_drift","severity":"critical","feedback":"Anlam değişmiştir."}'
             if self.calls == 10:
                 return "Retry raw output without required section."
             return f"Layer {self.calls} analysis"
@@ -619,6 +668,36 @@ async def test_quality_retry_missing_final_translation_marks_quality_failed() ->
         assert result.status == QUALITY_FAILED_STATUS
         assert result.final_translation == ""
         assert "retry output missing FINAL_TRANSLATION" in (result.error or "")
+
+    await engine.dispose()
+
+
+@pytest.mark.parametrize("case_path", GOLDEN_CASE_FILES, ids=lambda path: path.stem)
+async def test_golden_translation_cases(case_path: Path) -> None:
+    case = json.loads(case_path.read_text(encoding="utf-8"))
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    settings = Settings(OPENROUTER_MODEL="test-model", OPENROUTER_API_KEY="fake")
+    client = GoldenCaseOpenRouterClient(case)
+    pipeline = TranslationPipeline(settings=settings, openrouter_client=client)
+
+    async with session_factory() as session:
+        request = await create_translation_request(session, "ar_to_tr", case["source_text"], 1, 2)
+        result = await pipeline.run(session, request, translation_mode=case["mode"])
+        await session.refresh(result, ["layers"])
+
+        assert result.status == case["expected_status"]
+        expected_text = case["expected_warning_contains"]
+        if result.status == "completed":
+            final_layer = max(result.layers, key=lambda layer: layer.position)
+            await session.refresh(final_layer)
+            searchable_output = f"{result.final_translation or ''}\n{final_layer.output_text or ''}"
+            assert expected_text in searchable_output
+        else:
+            assert expected_text in (result.error or "")
 
     await engine.dispose()
 
